@@ -7,12 +7,11 @@ import time
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# Auto-refresh every 60 seconds to update market price
+# Auto-refresh every 60 seconds
 st_autorefresh(interval=60000, key="datarefresh")
 
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
-# CSS to keep metrics looking clean
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
@@ -25,21 +24,29 @@ ndx = yf.Ticker("^NDX")
 def get_data():
     for i in range(3):
         try:
-            hist = ndx.history(period="2d")
-            if hist.empty: continue
-            spot = hist['Close'].iloc[-1]
             hist_long = ndx.history(period="60d")
+            if hist_long.empty: continue
+            spot = hist_long['Close'].iloc[-1]
+            
+            # Calculate HV
             hist_long['returns'] = hist_long['Close'].pct_change()
             hv = hist_long['returns'].tail(20).std() * np.sqrt(252) * 100
+            
+            # Identify LVNs (Low Volume Nodes) by looking at price distribution
+            # We bin the prices and find the bins with the lowest frequency
+            price_bins = pd.cut(hist_long['Close'], bins=50)
+            node_counts = price_bins.value_counts()
+            lvn_threshold = node_counts.quantile(0.2) # Bottom 20% frequency
+            lvns = [bin.mid for bin, count in node_counts.items() if count <= lvn_threshold]
+            
             expiries = ndx.options
-            if not expiries: continue
             chain = ndx.option_chain(expiries[0])
-            return spot, expiries[0], chain.calls, chain.puts, hv
+            return spot, expiries[0], chain.calls, chain.puts, hv, lvns
         except:
             time.sleep(1)
-    return None, None, None, None, None
+    return None, None, None, None, None, None
 
-spot, expiry, calls, puts, hv = get_data()
+spot, expiry, calls, puts, hv, lvns = get_data()
 
 if spot:
     # Logic for Bias/Regime
@@ -62,22 +69,39 @@ if spot:
         fig_gamma.update_layout(template="plotly_dark", height=400, showlegend=False)
         st.plotly_chart(fig_gamma, use_container_width=True)
 
-        def calculate_advanced_reversal(strike, spot):
+        # REFINED PROBABILITY ENGINE (Includes LVN Alignment)
+        def calculate_advanced_reversal(strike, spot, lvns):
             diff = abs(spot - strike)
-            if diff <= 15: return round(10 + (diff * 2), 2)
-            elif diff <= 60: return round(45 + (diff * 0.6), 2)
-            else: return round(min(92.0, 75 + (diff / 25)), 2)
+            
+            # Base logic
+            if diff <= 15: base = 10 + (diff * 2)
+            elif diff <= 60: base = 45 + (diff * 0.6)
+            else: base = 75 + (diff / 25)
+            
+            # LVN Alignment Bonus: If strike is near an LVN, boost reversal chance
+            is_lvn = any(abs(strike - lvn) < 25 for lvn in lvns)
+            if is_lvn:
+                base += 8 # 8% 'Structural Strength' bonus
+                
+            return round(min(96.0, base), 2)
 
-        st.subheader("Sniper Entry Levels (50pt Target)")
+        st.subheader("Sniper Entry Levels (LVN Integrated)")
         col1, col2, col3 = st.columns(3)
         top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
         top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
+        
         with col1:
-            for s in top_c['strike'][:3]: st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
+            st.write("### 🟢 Resistance")
+            for s in top_c['strike'][:3]:
+                st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
         with col2:
-            for s in top_c['strike'][3:6]: st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
+            st.write("### 🟡 Mid-Range")
+            for s in top_c['strike'][3:6]:
+                st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
         with col3:
-            for s in top_p['strike'][:3]: st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
+            st.write("### 🔴 Support")
+            for s in top_p['strike'][:3]:
+                st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
 
     with tab2:
         st.subheader("Sentiment Metrics")
@@ -87,26 +111,16 @@ if spot:
         c_c.metric("IV/Put Skew", f"{skew:.2f}")
 
     with tab3:
-        st.subheader("Live Gamma Heatmap")
+        st.subheader("Live Gamma & Volume Density Heatmap")
         h_data = pd.concat([
             calls[(calls['strike'] > spot*0.95) & (calls['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Calls'),
             puts[(puts['strike'] > spot*0.95) & (puts['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Puts')
         ])
-        
         fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
-        
-        # Keep only the Price Crosshair (Live Spot)
         fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white")
-        
-        # Standard hover tooltips without the spike lines
-        fig_heat.update_layout(
-            template="plotly_dark", 
-            height=500,
-            hovermode="closest"
-        )
-        
+        fig_heat.update_layout(template="plotly_dark", height=500, hovermode="closest")
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.info("The **Dashed Line** is the Live Price. Bright yellow zones indicate heavy structural walls.")
+        st.info("Probability percentages now include **Low Volume Node** alignment from the past 60 sessions.")
 
 else:
     st.warning("Fetching Market Data...")
