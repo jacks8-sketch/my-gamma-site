@@ -3,9 +3,10 @@ import yfinance as yf
 import pandas as pd
 import plotly.express as px
 import time
+from datetime import datetime, timezone
 
 st.set_page_config(page_title="NDX Gamma Pro", layout="wide")
-st.title("📊 NDX Gamma & Volatility Dashboard")
+st.title("📊 NDX High-Accuracy Gamma Dashboard")
 
 ndx = yf.Ticker("^NDX")
 
@@ -23,65 +24,74 @@ def get_data():
             time.sleep(1)
     return None, None, None, None
 
+# 1. Advanced Probability Engine
+def calculate_advanced_reversal(strike, spot, calls, puts):
+    # Distance Factor
+    diff = abs(spot - strike)
+    
+    # Time (Theta) Factor - Calculate minutes until NY Close (21:00 UTC)
+    now = datetime.now(timezone.utc)
+    close_time = now.replace(hour=21, minute=0, second=0, microsecond=0)
+    minutes_to_close = max(1, (close_time - now).total_seconds() / 60)
+    
+    # Theta Intensity: Higher as day ends (max 2.0 multiplier)
+    theta_boost = max(1.0, 2.0 - (minutes_to_close / 390)) 
+    
+    # Relative Strength (OI Cluster)
+    total_oi = calls['openInterest'].sum() + puts['openInterest'].sum()
+    strike_oi = calls[calls['strike'] == strike]['openInterest'].sum() + puts[puts['strike'] == strike]['openInterest'].sum()
+    oi_weight = (strike_oi / (total_oi / len(calls))) * 0.5 # Relative to average
+    
+    # Reversal Logic: Target 50pt NQ bounce
+    if diff < 10: # Inside the 'Break' danger zone
+        base_prob = 15 + (diff * 2)
+    elif diff <= 60: # The 50pt Reversal Sweet Spot
+        base_prob = 40 + (diff * 0.8) + (oi_weight * 10)
+    else: # Distant walls
+        base_prob = 75 + (diff / 20)
+
+    final_prob = min(98, base_prob * theta_boost)
+    return round(final_prob, 2)
+
 spot, expiry, calls, puts = get_data()
 
-# UPDATED: 50-Point Reversal Sensitivity
-def get_strike_probs(strike, current_price):
-    diff = abs(current_price - strike)
-    
-    if diff <= 5: # Directly on the level - high risk of "slipping" through
-        return 15.0
-    elif diff <= 50: # Inside your 50-point target zone
-        # As it gets closer to 50pts away, probability of a bounce increases
-        return round(20 + (diff * 1.2), 2) 
-    else: # Outside the immediate danger zone
-        return round(min(95, 70 + (diff / 10)), 2)
-
 if spot:
+    # Gamma/GEX Logic
     if 'gamma' not in calls.columns or calls['gamma'].isnull().all():
-        calls['GEX'] = calls['openInterest'] * calls['strike'] * 0.001
-        puts['GEX'] = puts['openInterest'] * puts['strike'] * -0.001
-        st.info("Note: Using Open Interest Proxy.")
+        calls['GEX'] = calls['openInterest'] * 0.1
+        puts['GEX'] = puts['openInterest'] * -0.1
+        st.info("Using OI Density weighting.")
     else:
         calls['GEX'] = calls['openInterest'] * calls['gamma'] * (spot**2) * 0.01
         puts['GEX'] = puts['openInterest'] * puts['gamma'] * (spot**2) * -0.01
 
+    # Main Chart
     all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]])
-    fig = px.bar(all_gex, x='strike', y='GEX', 
-                 title=f"NDX Gamma Profile (Exp: {expiry})",
-                 labels={'strike': 'Strike Price', 'GEX': 'Exposure Strength'},
-                 color='GEX', color_continuous_scale='RdYlGn')
-    fig.update_layout(template="plotly_dark", height=450)
+    fig = px.bar(all_gex, x='strike', y='GEX', title=f"NDX Gamma Profile: {expiry}", color='GEX', color_continuous_scale='RdYlGn')
+    fig.update_layout(template="plotly_dark", height=400)
     st.plotly_chart(fig, use_container_width=True)
 
-    col_a, col_b = st.columns([1, 3])
-    with col_a:
-        st.metric("NDX Spot", f"{spot:,.2f}")
-    with col_b:
-        st.info(f"💡 REVERSAL %: Likelihood of a 50+ point bounce at this level.")
-
-    st.write("---")
-
-    st.subheader("🎯 Key Strike Levels & 50pt Reversal Odds")
-    col1, col2, col3 = st.columns(3)
+    st.subheader("🎯 Sniper Entry Levels (50pt NQ Target)")
+    c1, c2, c3 = st.columns(3)
     
-    top_c = calls.nlargest(6, 'GEX').sort_values('strike')
-    top_p = puts.nsmallest(6, 'GEX').sort_values('strike', ascending=False)
+    # Get top clusters
+    top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
+    top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
 
-    with col1:
-        st.write("### 🟢 Call Walls")
-        for val in top_c['strike'][:3]:
-            rp = get_strike_probs(val, spot)
-            st.success(f"Strike {val:,.0f} | **{rp}% Reversal**")
-    with col2:
-        st.write("### 🟡 Mid-Range")
-        for val in top_c['strike'][3:6]:
-            rp = get_strike_probs(val, spot)
-            st.warning(f"Strike {val:,.0f} | **{rp}% Reversal**")
-    with col3:
-        st.write("### 🔴 Put Walls")
-        for val in top_p['strike'][:3]:
-            rp = get_strike_probs(val, spot)
-            st.error(f"Strike {val:,.0f} | **{rp}% Reversal**")
+    with c1:
+        st.write("### 🟢 Resistance Walls")
+        for s in top_c['strike'][:3]:
+            prob = calculate_advanced_reversal(s, spot, calls, puts)
+            st.success(f"Strike {s:,.0f} | **{prob}% Rev**")
+    with c2:
+        st.write("### 🟡 Pivot Clusters")
+        for s in top_c['strike'][3:6]:
+            prob = calculate_advanced_reversal(s, spot, calls, puts)
+            st.warning(f"Strike {s:,.0f} | **{prob}% Rev**")
+    with c3:
+        st.write("### 🔴 Support Walls")
+        for s in top_p['strike'][:3]:
+            prob = calculate_advanced_reversal(s, spot, calls, puts)
+            st.error(f"Strike {s:,.0f} | **{prob}% Rev**")
 else:
-    st.warning("Data is currently refreshing. Please wait a moment.")
+    st.warning("Refreshing Data...")
