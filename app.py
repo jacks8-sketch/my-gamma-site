@@ -8,15 +8,10 @@ from datetime import datetime, timezone
 
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
-# CSS Fix to prevent text overlapping and auto-scale font sizes
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] {
-        font-size: 1.8vw !important;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 1.0vw !important;
-    }
+    [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
+    [data-testid="stMetricLabel"] { font-size: 1.0vw !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -45,85 +40,63 @@ def get_bias(calls, puts, spot, hv):
     atm_put_iv = puts.iloc[(puts['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     avg_iv = (atm_call_iv + atm_put_iv) / 2
     skew = atm_put_iv - atm_call_iv
-    
-    if avg_iv > hv + 2: regime = "⚡ VOLATILE (Trend Likely)"
-    elif avg_iv < hv - 2: regime = "🛡️ COMPLACENT (Mean Reversion)"
-    else: regime = "⚖️ NEUTRAL"
-        
-    if skew > 2.0: bias = "🔴 BEARISH (Fear)"
-    elif skew < -0.5: bias = "🟢 BULLISH (Demand)"
-    else: bias = "🟡 NEUTRAL / CHOP"
-        
+    regime = "⚡ VOLATILE (Trend)" if avg_iv > hv + 2 else "🛡️ COMPLACENT (Mean Rev)" if avg_iv < hv - 2 else "⚖️ NEUTRAL"
+    bias = "🔴 BEARISH" if skew > 2.0 else "🟢 BULLISH" if skew < -0.5 else "🟡 NEUTRAL"
     return bias, regime, avg_iv, skew
 
 if spot:
     bias, regime, iv, skew = get_bias(calls, puts, spot, hv)
-    tab1, tab2 = st.tabs(["🎯 Gamma Sniper", "📊 IV & Bias Analysis"])
+    tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap"])
+
+    # Pre-calculate GEX for all tabs
+    calls['GEX'] = calls['openInterest'] * (calls['gamma'] if 'gamma' in calls.columns else 0.1)
+    puts['GEX'] = puts['openInterest'] * (puts['gamma'] if 'gamma' in puts.columns else 0.1) * -1
 
     with tab1:
         st.subheader("NDX Gamma Profile")
-        if 'gamma' not in calls.columns or calls['gamma'].isnull().all():
-            calls['GEX'] = calls['openInterest'] * 0.1
-            puts['GEX'] = puts['openInterest'] * -0.1
-        else:
-            calls['GEX'] = calls['openInterest'] * calls['gamma'] * (spot**2) * 0.01
-            puts['GEX'] = puts['openInterest'] * puts['gamma'] * (spot**2) * -0.01
-
         all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]])
         fig_gamma = px.bar(all_gex, x='strike', y='GEX', color='GEX', color_continuous_scale='RdYlGn')
         fig_gamma.update_layout(template="plotly_dark", height=400, showlegend=False)
         st.plotly_chart(fig_gamma, use_container_width=True)
 
-        st.write("---")
-        
         def calculate_advanced_reversal(strike, spot):
             diff = abs(spot - strike)
             if diff <= 15: return round(10 + (diff * 2), 2)
             elif diff <= 60: return round(45 + (diff * 0.6), 2)
             else: return round(min(92.0, 75 + (diff / 25)), 2)
 
-        st.subheader("Sniper Entry Levels (50pt Target)")
+        st.subheader("Sniper Entry Levels")
         col1, col2, col3 = st.columns(3)
         top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
         top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
-
         with col1:
-            st.write("### 🟢 Resistance")
-            for s in top_c['strike'][:3]:
-                st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
+            for s in top_c['strike'][:3]: st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
         with col2:
-            st.write("### 🟡 Mid-Range")
-            for s in top_c['strike'][3:6]:
-                st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
+            for s in top_c['strike'][3:6]: st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
         with col3:
-            st.write("### 🔴 Support")
-            for s in top_p['strike'][:3]:
-                st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
+            for s in top_p['strike'][:3]: st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot)}% Rev**")
 
     with tab2:
-        st.subheader("Volatility & Sentiment Dashboard")
-        
-        vol_data = pd.DataFrame({
-            'Metric': ['Implied Vol (Forward)', 'Historical Vol (Past)'],
-            'Value': [iv, hv]
-        })
-        fig_vol = px.bar(vol_data, x='Metric', y='Value', color='Metric', 
-                         color_discrete_map={'Implied Vol (Forward)': '#00CC96', 'Historical Vol (Past)': '#636EFA'})
-        fig_vol.update_layout(template="plotly_dark", height=300)
-        st.plotly_chart(fig_vol, use_container_width=True)
-        
-        # --- FIXED METRICS SECTION ---
+        st.subheader("Sentiment Metrics")
         c_a, c_b, c_c = st.columns(3)
         c_a.metric("Daily Bias", bias)
-        
-        # Slices the text to keep it clean in the UI, full text in tooltip
-        regime_short = regime.split('(')[0].strip()
-        c_b.metric("Regime", regime_short, help=regime)
-        
+        c_b.metric("Regime", regime.split('(')[0].strip(), help=regime)
         c_c.metric("IV/Put Skew", f"{skew:.2f}")
-        
+        st.info(f"**Trading Tip:** {bias} focus today. Watch the '{regime}' for volatility.")
+
+    with tab3:
+        st.subheader("Gamma Density Heatmap")
+        # Create a heatmap of Open Interest vs Strike to show "Structural Walls"
+        heatmap_data = pd.concat([
+            calls[['strike', 'openInterest']].assign(Type='Calls'),
+            puts[['strike', 'openInterest']].assign(Type='Puts')
+        ])
+        fig_heat = px.density_heatmap(heatmap_data, x="strike", y="Type", z="openInterest", 
+                                      color_continuous_scale="Viridis", title="OI Concentration Map")
+        fig_heat.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_heat, use_container_width=True)
         st.write("---")
-        st.info(f"**Trading Tip:** In a '{regime}' regime, look for '{bias}' entries near the Gamma Walls.")
+        st.markdown("**How to read the Heatmap:** The brightest spots are the 'Hard Walls'. If the bright spot is far from current price, expect a magnet effect. If price is sitting on a bright spot, expect a battle.")
 
 else:
-    st.warning("Data is currently refreshing. Please wait a moment.")
+    st.warning("Data is currently refreshing...")
