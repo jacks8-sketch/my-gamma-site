@@ -5,14 +5,14 @@ import plotly.express as px
 import numpy as np
 import time
 from datetime import datetime, timezone
-
-# --- AUTO REFRESH ---
-# This pings the server every 60 seconds to move the crosshair
 from streamlit_autorefresh import st_autorefresh
+
+# Auto-refresh every 60 seconds to update market price
 st_autorefresh(interval=60000, key="datarefresh")
 
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
+# CSS to keep metrics looking clean
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
@@ -28,11 +28,9 @@ def get_data():
             hist = ndx.history(period="2d")
             if hist.empty: continue
             spot = hist['Close'].iloc[-1]
-            # Get fresh history for HV
             hist_long = ndx.history(period="60d")
             hist_long['returns'] = hist_long['Close'].pct_change()
             hv = hist_long['returns'].tail(20).std() * np.sqrt(252) * 100
-            
             expiries = ndx.options
             if not expiries: continue
             chain = ndx.option_chain(expiries[0])
@@ -44,7 +42,7 @@ def get_data():
 spot, expiry, calls, puts, hv = get_data()
 
 if spot:
-    # 1. Logic for Bias/Regime
+    # Logic for Bias/Regime
     atm_call_iv = calls.iloc[(calls['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     atm_put_iv = puts.iloc[(puts['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     avg_iv = (atm_call_iv + atm_put_iv) / 2
@@ -54,7 +52,6 @@ if spot:
 
     tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap"])
 
-    # Global GEX Calculation
     calls['GEX'] = calls['openInterest'] * (calls['gamma'] if 'gamma' in calls.columns else 0.1)
     puts['GEX'] = puts['openInterest'] * (puts['gamma'] if 'gamma' in puts.columns else 0.1) * -1
 
@@ -91,19 +88,29 @@ if spot:
 
     with tab3:
         st.subheader("Live Gamma Heatmap")
-        # Zoom in on spot
         h_data = pd.concat([
             calls[(calls['strike'] > spot*0.95) & (calls['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Calls'),
             puts[(puts['strike'] > spot*0.95) & (puts['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Puts')
         ])
+        
         fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
         
-        # This line will move every time the app refreshes (every 60s)
-        fig_heat.add_vline(x=spot, line_width=4, line_dash="dash", line_color="white")
-        fig_heat.add_annotation(x=spot, y=1, text="LIVE PRICE", showarrow=True, arrowhead=1, bgcolor="white", font_color="black")
+        # Static dashed line for Live Spot
+        fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white")
         
-        fig_heat.update_layout(template="plotly_dark", height=500)
+        # MOUSE CROSSHAIR LOGIC
+        fig_heat.update_xaxes(showspikes=True, spikecolor="white", spikethickness=1, spikedash="solid", spikemode="across")
+        fig_heat.update_yaxes(showspikes=True, spikecolor="white", spikethickness=1, spikedash="solid", spikemode="across")
+        
+        fig_heat.update_layout(
+            template="plotly_dark", 
+            height=500,
+            hovermode="closest",
+            spikedistance=-1 # Ensures crosshair shows anywhere on the chart
+        )
+        
         st.plotly_chart(fig_heat, use_container_width=True)
+        st.info("The **Dashed Line** is the Live Price. The **Mouse Crosshair** follows your cursor across the heatmap.")
 
 else:
     st.warning("Fetching Market Data...")
