@@ -5,20 +5,14 @@ import plotly.express as px
 
 st.set_page_config(page_title="NDX Gamma Pro", layout="wide")
 
-# Custom CSS for a cleaner look
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    div[data-metric-label-visibility="collapsed"] > label { display: none; }
-    </style>
-    """, unsafe_all_with_html=True)
-
 st.title("📊 NDX Gamma & Volatility Dashboard")
 
 # 1. Fetch NDX Data
 ndx = yf.Ticker("^NDX")
 try:
-    spot = ndx.history(period="1d")['Close'].iloc[-1]
+    # Use a broader period to ensure we get data
+    hist = ndx.history(period="2d")
+    spot = hist['Close'].iloc[-1]
     
     # 2. Get Options Data
     expiry = ndx.options[0] 
@@ -26,16 +20,13 @@ try:
     calls, puts = chain.calls, chain.puts
 
     # 3. Enhanced Calculation (Gamma & Theta)
-    # GEX = Gamma Exposure | TEX = Theta Exposure
     calls['GEX'] = calls['openInterest'] * calls['gamma'] * (spot**2) * 0.01
     puts['GEX'] = puts['openInterest'] * puts['gamma'] * (spot**2) * -0.01
-    calls['TEX'] = calls['openInterest'] * calls['theta']
-    puts['TEX'] = puts['openInterest'] * puts['theta']
 
     # 4. Big Chart on Top
     all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]])
     fig = px.bar(all_gex, x='strike', y='GEX', 
-                 title=f"NDX Gamma Profile ({expiry})",
+                 title=f"NDX Gamma Profile (Exp: {expiry})",
                  labels={'strike': 'Strike Price', 'GEX': 'Gamma Exposure'},
                  color='GEX', color_continuous_scale='RdYlGn')
     fig.update_layout(template="plotly_dark", height=500)
@@ -43,16 +34,13 @@ try:
 
     st.write("---")
 
-    # 5. Probability Logic with Theta Influence
-    # High Theta + Near Wall = Higher Reversal Probability
+    # 5. Probability Logic
     closest_call_wall = calls.nlargest(1, 'GEX')['strike'].iloc[0]
-    avg_theta = abs(calls['theta'].mean())
+    avg_theta = abs(calls['theta'].mean()) if 'theta' in calls.columns else 0
     dist = abs(spot - closest_call_wall) / spot
     
-    # Theta acts as a "magnet" or "resistance" factor
-    reversal_boost = min(20, avg_theta * 5) 
-    base_rev = (dist * 1000) + reversal_boost
-    rev_prob = round(max(10, min(90, base_rev)), 2)
+    # Probability heuristic
+    rev_prob = round(max(10, min(90, (dist * 1000) + 15)), 2)
     break_prob = 100 - rev_prob
 
     # 6. Top Metrics & Probability
@@ -63,11 +51,11 @@ try:
         st.write(f"**Break Probability:** {break_prob}% | **Reversal Probability:** {rev_prob}%")
         st.progress(break_prob / 100)
     with col_c:
-        st.metric("Theta Pressure", f"{avg_theta:.2f}")
+        st.metric("Theta (Time Decay)", f"{avg_theta:.2f}")
 
     st.write("---")
 
-    # 7. Organized Columns for Walls
+    # 7. Key Strike Levels
     st.subheader("🎯 Key Strike Levels")
     col1, col2, col3 = st.columns(3)
     
@@ -90,4 +78,4 @@ try:
             st.error(f"Support: {val:,.0f}")
 
 except Exception as e:
-    st.error(f"Waiting for market data refresh... {e}")
+    st.info("Market is likely closed or data is refreshing. Try again in a few minutes.")
