@@ -6,6 +6,11 @@ import numpy as np
 import time
 from datetime import datetime, timezone
 
+# --- AUTO REFRESH ---
+# This pings the server every 60 seconds to move the crosshair
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=60000, key="datarefresh")
+
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
 st.markdown("""
@@ -20,39 +25,41 @@ ndx = yf.Ticker("^NDX")
 def get_data():
     for i in range(3):
         try:
-            hist = ndx.history(period="60d")
+            hist = ndx.history(period="2d")
             if hist.empty: continue
             spot = hist['Close'].iloc[-1]
-            hist['returns'] = hist['Close'].pct_change()
-            hv = hist['returns'].tail(20).std() * np.sqrt(252) * 100
+            # Get fresh history for HV
+            hist_long = ndx.history(period="60d")
+            hist_long['returns'] = hist_long['Close'].pct_change()
+            hv = hist_long['returns'].tail(20).std() * np.sqrt(252) * 100
+            
             expiries = ndx.options
             if not expiries: continue
             chain = ndx.option_chain(expiries[0])
-            return spot, expiries[0], chain.calls, chain.puts, hv, hist
+            return spot, expiries[0], chain.calls, chain.puts, hv
         except:
             time.sleep(1)
-    return None, None, None, None, None, None
+    return None, None, None, None, None
 
-spot, expiry, calls, puts, hv, hist = get_data()
+spot, expiry, calls, puts, hv = get_data()
 
-def get_bias(calls, puts, spot, hv):
+if spot:
+    # 1. Logic for Bias/Regime
     atm_call_iv = calls.iloc[(calls['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     atm_put_iv = puts.iloc[(puts['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     avg_iv = (atm_call_iv + atm_put_iv) / 2
     skew = atm_put_iv - atm_call_iv
     regime = "⚡ VOLATILE (Trend)" if avg_iv > hv + 2 else "🛡️ COMPLACENT (Mean Rev)" if avg_iv < hv - 2 else "⚖️ NEUTRAL"
     bias = "🔴 BEARISH" if skew > 2.0 else "🟢 BULLISH" if skew < -0.5 else "🟡 NEUTRAL"
-    return bias, regime, avg_iv, skew
 
-if spot:
-    bias, regime, iv, skew = get_bias(calls, puts, spot, hv)
     tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap"])
 
+    # Global GEX Calculation
     calls['GEX'] = calls['openInterest'] * (calls['gamma'] if 'gamma' in calls.columns else 0.1)
     puts['GEX'] = puts['openInterest'] * (puts['gamma'] if 'gamma' in puts.columns else 0.1) * -1
 
     with tab1:
-        st.subheader("NDX Gamma Profile")
+        st.subheader(f"NDX Gamma Profile | Spot: {spot:,.2f}")
         all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]])
         fig_gamma = px.bar(all_gex, x='strike', y='GEX', color='GEX', color_continuous_scale='RdYlGn')
         fig_gamma.update_layout(template="plotly_dark", height=400, showlegend=False)
@@ -64,7 +71,7 @@ if spot:
             elif diff <= 60: return round(45 + (diff * 0.6), 2)
             else: return round(min(92.0, 75 + (diff / 25)), 2)
 
-        st.subheader("Sniper Entry Levels")
+        st.subheader("Sniper Entry Levels (50pt Target)")
         col1, col2, col3 = st.columns(3)
         top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
         top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
@@ -83,23 +90,20 @@ if spot:
         c_c.metric("IV/Put Skew", f"{skew:.2f}")
 
     with tab3:
-        st.subheader("Gamma Density Heatmap")
-        # Filter for strikes within 10% of spot to make the heatmap more readable
-        heatmap_data = pd.concat([
-            calls[(calls['strike'] > spot*0.9) & (calls['strike'] < spot*1.1)][['strike', 'openInterest']].assign(Type='Calls'),
-            puts[(puts['strike'] > spot*0.9) & (puts['strike'] < spot*1.1)][['strike', 'openInterest']].assign(Type='Puts')
+        st.subheader("Live Gamma Heatmap")
+        # Zoom in on spot
+        h_data = pd.concat([
+            calls[(calls['strike'] > spot*0.95) & (calls['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Calls'),
+            puts[(puts['strike'] > spot*0.95) & (puts['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Puts')
         ])
+        fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
         
-        fig_heat = px.density_heatmap(heatmap_data, x="strike", y="Type", z="openInterest", 
-                                      color_continuous_scale="Viridis", title="Structural Wall Map")
+        # This line will move every time the app refreshes (every 60s)
+        fig_heat.add_vline(x=spot, line_width=4, line_dash="dash", line_color="white")
+        fig_heat.add_annotation(x=spot, y=1, text="LIVE PRICE", showarrow=True, arrowhead=1, bgcolor="white", font_color="black")
         
-        # --- ADD CROSSHAIR (Vertical Line at Spot) ---
-        fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white", 
-                          annotation_text=f"LIVE SPOT: {spot:,.0f}", annotation_position="top left")
-        
-        fig_heat.update_layout(template="plotly_dark", height=450)
+        fig_heat.update_layout(template="plotly_dark", height=500)
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.info("The **White Dashed Line** is the current price. If it's entering a bright yellow zone, prepare for a reversal or a battle.")
 
 else:
-    st.warning("Data is currently refreshing...")
+    st.warning("Fetching Market Data...")
