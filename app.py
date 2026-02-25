@@ -8,20 +8,28 @@ from datetime import datetime, timezone
 
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
+# CSS Fix to prevent text overlapping and auto-scale font sizes
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] {
+        font-size: 1.8vw !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 1.0vw !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 ndx = yf.Ticker("^NDX")
 
 def get_data():
     for i in range(3):
         try:
-            # Get 60d to ensure we have enough for HV and IV history
             hist = ndx.history(period="60d")
             if hist.empty: continue
             spot = hist['Close'].iloc[-1]
-            
-            # Historical Volatility (20-day)
             hist['returns'] = hist['Close'].pct_change()
             hv = hist['returns'].tail(20).std() * np.sqrt(252) * 100
-            
             expiries = ndx.options
             if not expiries: continue
             chain = ndx.option_chain(expiries[0])
@@ -50,8 +58,6 @@ def get_bias(calls, puts, spot, hv):
 
 if spot:
     bias, regime, iv, skew = get_bias(calls, puts, spot, hv)
-    
-    # --- TABS LAYOUT ---
     tab1, tab2 = st.tabs(["🎯 Gamma Sniper", "📊 IV & Bias Analysis"])
 
     with tab1:
@@ -70,7 +76,6 @@ if spot:
 
         st.write("---")
         
-        # Reversal Probability Logic
         def calculate_advanced_reversal(strike, spot):
             diff = abs(spot - strike)
             if diff <= 15: return round(10 + (diff * 2), 2)
@@ -98,7 +103,6 @@ if spot:
     with tab2:
         st.subheader("Volatility & Sentiment Dashboard")
         
-        # IV vs HV Comparison Chart
         vol_data = pd.DataFrame({
             'Metric': ['Implied Vol (Forward)', 'Historical Vol (Past)'],
             'Value': [iv, hv]
@@ -108,13 +112,18 @@ if spot:
         fig_vol.update_layout(template="plotly_dark", height=300)
         st.plotly_chart(fig_vol, use_container_width=True)
         
+        # --- FIXED METRICS SECTION ---
         c_a, c_b, c_c = st.columns(3)
         c_a.metric("Daily Bias", bias)
-        c_b.metric("Market Regime", regime)
+        
+        # Slices the text to keep it clean in the UI, full text in tooltip
+        regime_short = regime.split('(')[0].strip()
+        c_b.metric("Regime", regime_short, help=regime)
+        
         c_c.metric("IV/Put Skew", f"{skew:.2f}")
         
         st.write("---")
-        st.info(f"**Trading Tip:** In a '{regime}' regime, look for '{bias}' entries near the Gamma Walls. If IV is much higher than HV, expect faster moves and tighter reversals.")
+        st.info(f"**Trading Tip:** In a '{regime}' regime, look for '{bias}' entries near the Gamma Walls.")
 
 else:
     st.warning("Data is currently refreshing. Please wait a moment.")
