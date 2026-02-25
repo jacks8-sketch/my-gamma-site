@@ -25,12 +25,19 @@ def get_data():
 
 spot, expiry, calls, puts = get_data()
 
+# Helper function to calculate probability for a specific strike
+def get_strike_probs(strike, current_price):
+    dist = abs(current_price - strike) / current_price
+    # If price is far, reversal chance is high; if price is touching, reversal chance is lower
+    rev_p = round(max(10, min(95, (dist * 1000) + 15)), 2)
+    return rev_p
+
 if spot:
-    # Check if Gamma exists, if not, create a proxy
+    # Check if Gamma exists
     if 'gamma' not in calls.columns or calls['gamma'].isnull().all():
         calls['GEX'] = calls['openInterest'] * calls['strike'] * 0.001
         puts['GEX'] = puts['openInterest'] * puts['strike'] * -0.001
-        st.info("Note: Using Open Interest Proxy (Real Gamma data currently unavailable).")
+        st.info("Note: Using Open Interest Proxy.")
     else:
         calls['GEX'] = calls['openInterest'] * calls['gamma'] * (spot**2) * 0.01
         puts['GEX'] = puts['openInterest'] * puts['gamma'] * (spot**2) * -0.01
@@ -41,32 +48,20 @@ if spot:
                  title=f"NDX Gamma Profile (Exp: {expiry})",
                  labels={'strike': 'Strike Price', 'GEX': 'Exposure Strength'},
                  color='GEX', color_continuous_scale='RdYlGn')
-    fig.update_layout(template="plotly_dark", height=500)
+    fig.update_layout(template="plotly_dark", height=450)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.write("---")
-
-    # Probability Logic
-    closest_call_wall = calls.nlargest(1, 'GEX')['strike'].iloc[0]
-    avg_theta = abs(calls['theta'].mean()) if 'theta' in calls.columns else 0
-    dist = abs(spot - closest_call_wall) / spot
-    rev_prob = round(max(10, min(90, (dist * 1000) + 15)), 2)
-    break_prob = 100 - rev_prob
-
     # Top Metrics
-    col_a, col_b, col_c = st.columns([1, 2, 1])
+    col_a, col_b = st.columns([1, 3])
     with col_a:
         st.metric("NDX Spot", f"{spot:,.2f}")
     with col_b:
-        st.write(f"**Break Probability:** {break_prob}% | **Reversal Probability:** {rev_prob}%")
-        st.progress(break_prob / 100)
-    with col_c:
-        st.metric("Time Pressure", f"{avg_theta:.2f}")
+        st.info(f"💡 Higher Reversal % = Level is likely to HOLD. Lower Reversal % = Level is likely to BREAK.")
 
     st.write("---")
 
-    # Key Strike Levels
-    st.subheader("🎯 Key Strike Levels")
+    # Key Strike Levels with Probabilities
+    st.subheader("🎯 Key Strike Levels & Reversal Odds")
     col1, col2, col3 = st.columns(3)
     
     top_c = calls.nlargest(6, 'GEX').sort_values('strike')
@@ -75,14 +70,17 @@ if spot:
     with col1:
         st.write("### 🟢 Call Walls")
         for val in top_c['strike'][:3]:
-            st.success(f"Resistance: {val:,.0f}")
+            rp = get_strike_probs(val, spot)
+            st.success(f"Strike {val:,.0f} | **{rp}% Reversal**")
     with col2:
         st.write("### 🟡 Mid-Range")
         for val in top_c['strike'][3:6]:
-            st.warning(f"Pivot: {val:,.0f}")
+            rp = get_strike_probs(val, spot)
+            st.warning(f"Strike {val:,.0f} | **{rp}% Reversal**")
     with col3:
         st.write("### 🔴 Put Walls")
         for val in top_p['strike'][:3]:
-            st.error(f"Support: {val:,.0f}")
+            rp = get_strike_probs(val, spot)
+            st.error(f"Strike {val:,.0f} | **{rp}% Reversal**")
 else:
     st.warning("Data is currently refreshing. Please wait a moment.")
