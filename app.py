@@ -95,22 +95,18 @@ if spot:
         
         fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
         
-        # Static dashed line for Live Spot
+        # Keep only the Price Crosshair (Live Spot)
         fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white")
         
-        # MOUSE CROSSHAIR LOGIC
-        fig_heat.update_xaxes(showspikes=True, spikecolor="white", spikethickness=1, spikedash="solid", spikemode="across")
-        fig_heat.update_yaxes(showspikes=True, spikecolor="white", spikethickness=1, spikedash="solid", spikemode="across")
-        
+        # Standard hover tooltips without the spike lines
         fig_heat.update_layout(
             template="plotly_dark", 
             height=500,
-            hovermode="closest",
-            spikedistance=-1 # Ensures crosshair shows anywhere on the chart
+            hovermode="closest"
         )
         
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.info("The **Dashed Line** is the Live Price. The **Mouse Crosshair** follows your cursor across the heatmap.")
+        st.info("The **Dashed Line** is the Live Price. Bright yellow zones indicate heavy structural walls.")
 
 else:
     st.warning("Fetching Market Data...")
