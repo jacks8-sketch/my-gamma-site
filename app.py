@@ -48,7 +48,6 @@ if spot:
     bias, regime, iv, skew = get_bias(calls, puts, spot, hv)
     tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap"])
 
-    # Pre-calculate GEX for all tabs
     calls['GEX'] = calls['openInterest'] * (calls['gamma'] if 'gamma' in calls.columns else 0.1)
     puts['GEX'] = puts['openInterest'] * (puts['gamma'] if 'gamma' in puts.columns else 0.1) * -1
 
@@ -82,21 +81,25 @@ if spot:
         c_a.metric("Daily Bias", bias)
         c_b.metric("Regime", regime.split('(')[0].strip(), help=regime)
         c_c.metric("IV/Put Skew", f"{skew:.2f}")
-        st.info(f"**Trading Tip:** {bias} focus today. Watch the '{regime}' for volatility.")
 
     with tab3:
         st.subheader("Gamma Density Heatmap")
-        # Create a heatmap of Open Interest vs Strike to show "Structural Walls"
+        # Filter for strikes within 10% of spot to make the heatmap more readable
         heatmap_data = pd.concat([
-            calls[['strike', 'openInterest']].assign(Type='Calls'),
-            puts[['strike', 'openInterest']].assign(Type='Puts')
+            calls[(calls['strike'] > spot*0.9) & (calls['strike'] < spot*1.1)][['strike', 'openInterest']].assign(Type='Calls'),
+            puts[(puts['strike'] > spot*0.9) & (puts['strike'] < spot*1.1)][['strike', 'openInterest']].assign(Type='Puts')
         ])
+        
         fig_heat = px.density_heatmap(heatmap_data, x="strike", y="Type", z="openInterest", 
-                                      color_continuous_scale="Viridis", title="OI Concentration Map")
-        fig_heat.update_layout(template="plotly_dark", height=400)
+                                      color_continuous_scale="Viridis", title="Structural Wall Map")
+        
+        # --- ADD CROSSHAIR (Vertical Line at Spot) ---
+        fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white", 
+                          annotation_text=f"LIVE SPOT: {spot:,.0f}", annotation_position="top left")
+        
+        fig_heat.update_layout(template="plotly_dark", height=450)
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.write("---")
-        st.markdown("**How to read the Heatmap:** The brightest spots are the 'Hard Walls'. If the bright spot is far from current price, expect a magnet effect. If price is sitting on a bright spot, expect a battle.")
+        st.info("The **White Dashed Line** is the current price. If it's entering a bright yellow zone, prepare for a reversal or a battle.")
 
 else:
     st.warning("Data is currently refreshing...")
