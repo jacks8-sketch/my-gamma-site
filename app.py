@@ -25,15 +25,19 @@ def get_data():
 
 spot, expiry, calls, puts = get_data()
 
-# Helper function to calculate probability for a specific strike
+# UPDATED: 50-Point Reversal Sensitivity
 def get_strike_probs(strike, current_price):
-    dist = abs(current_price - strike) / current_price
-    # If price is far, reversal chance is high; if price is touching, reversal chance is lower
-    rev_p = round(max(10, min(95, (dist * 1000) + 15)), 2)
-    return rev_p
+    diff = abs(current_price - strike)
+    
+    if diff <= 5: # Directly on the level - high risk of "slipping" through
+        return 15.0
+    elif diff <= 50: # Inside your 50-point target zone
+        # As it gets closer to 50pts away, probability of a bounce increases
+        return round(20 + (diff * 1.2), 2) 
+    else: # Outside the immediate danger zone
+        return round(min(95, 70 + (diff / 10)), 2)
 
 if spot:
-    # Check if Gamma exists
     if 'gamma' not in calls.columns or calls['gamma'].isnull().all():
         calls['GEX'] = calls['openInterest'] * calls['strike'] * 0.001
         puts['GEX'] = puts['openInterest'] * puts['strike'] * -0.001
@@ -42,7 +46,6 @@ if spot:
         calls['GEX'] = calls['openInterest'] * calls['gamma'] * (spot**2) * 0.01
         puts['GEX'] = puts['openInterest'] * puts['gamma'] * (spot**2) * -0.01
 
-    # Chart on Top
     all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]])
     fig = px.bar(all_gex, x='strike', y='GEX', 
                  title=f"NDX Gamma Profile (Exp: {expiry})",
@@ -51,17 +54,15 @@ if spot:
     fig.update_layout(template="plotly_dark", height=450)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Top Metrics
     col_a, col_b = st.columns([1, 3])
     with col_a:
         st.metric("NDX Spot", f"{spot:,.2f}")
     with col_b:
-        st.info(f"💡 Higher Reversal % = Level is likely to HOLD. Lower Reversal % = Level is likely to BREAK.")
+        st.info(f"💡 REVERSAL %: Likelihood of a 50+ point bounce at this level.")
 
     st.write("---")
 
-    # Key Strike Levels with Probabilities
-    st.subheader("🎯 Key Strike Levels & Reversal Odds")
+    st.subheader("🎯 Key Strike Levels & 50pt Reversal Odds")
     col1, col2, col3 = st.columns(3)
     
     top_c = calls.nlargest(6, 'GEX').sort_values('strike')
