@@ -32,11 +32,10 @@ def get_data():
             hist_long['returns'] = hist_long['Close'].pct_change()
             hv = hist_long['returns'].tail(20).std() * np.sqrt(252) * 100
             
-            # Identify LVNs (Low Volume Nodes) by looking at price distribution
-            # We bin the prices and find the bins with the lowest frequency
+            # Identify LVNs (Low Volume Nodes)
             price_bins = pd.cut(hist_long['Close'], bins=50)
             node_counts = price_bins.value_counts()
-            lvn_threshold = node_counts.quantile(0.2) # Bottom 20% frequency
+            lvn_threshold = node_counts.quantile(0.2)
             lvns = [bin.mid for bin, count in node_counts.items() if count <= lvn_threshold]
             
             expiries = ndx.options
@@ -69,42 +68,37 @@ if spot:
         fig_gamma.update_layout(template="plotly_dark", height=400, showlegend=False)
         st.plotly_chart(fig_gamma, use_container_width=True)
 
-        # REFINED PROBABILITY ENGINE (Includes LVN Alignment)
         def calculate_advanced_reversal(strike, spot, lvns):
             diff = abs(spot - strike)
-            
-            # Base logic
             if diff <= 15: base = 10 + (diff * 2)
             elif diff <= 60: base = 45 + (diff * 0.6)
             else: base = 75 + (diff / 25)
-            
-            # LVN Alignment Bonus: If strike is near an LVN, boost reversal chance
-            is_lvn = any(abs(strike - lvn) < 25 for lvn in lvns)
-            if is_lvn:
-                base += 8 # 8% 'Structural Strength' bonus
-                
+            if any(abs(strike - lvn) < 25 for lvn in lvns): base += 8
             return round(min(96.0, base), 2)
 
-        st.subheader("Sniper Entry Levels (LVN Integrated)")
+        st.subheader("Sniper Entry Levels")
         col1, col2, col3 = st.columns(3)
         top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
         top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
-        
         with col1:
-            st.write("### 🟢 Resistance")
-            for s in top_c['strike'][:3]:
-                st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
+            for s in top_c['strike'][:3]: st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
         with col2:
-            st.write("### 🟡 Mid-Range")
-            for s in top_c['strike'][3:6]:
-                st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
+            for s in top_c['strike'][3:6]: st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
         with col3:
-            st.write("### 🔴 Support")
-            for s in top_p['strike'][:3]:
-                st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
+            for s in top_p['strike'][:3]: st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns)}% Rev**")
 
     with tab2:
-        st.subheader("Sentiment Metrics")
+        st.subheader("Volatility Comparison")
+        # RESTORED CHART: IV vs HV
+        vol_df = pd.DataFrame({
+            'Type': ['Implied Vol (Future)', 'Historical Vol (Past)'],
+            'Value': [avg_iv, hv]
+        })
+        fig_vol = px.bar(vol_df, x='Type', y='Value', color='Type', 
+                         color_discrete_map={'Implied Vol (Future)': '#00CC96', 'Historical Vol (Past)': '#636EFA'})
+        fig_vol.update_layout(template="plotly_dark", height=350, showlegend=False)
+        st.plotly_chart(fig_vol, use_container_width=True)
+        
         c_a, c_b, c_c = st.columns(3)
         c_a.metric("Daily Bias", bias)
         c_b.metric("Regime", regime.split('(')[0].strip(), help=regime)
@@ -120,7 +114,6 @@ if spot:
         fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white")
         fig_heat.update_layout(template="plotly_dark", height=500, hovermode="closest")
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.info("Probability percentages now include **Low Volume Node** alignment from the past 60 sessions.")
 
 else:
     st.warning("Fetching Market Data...")
