@@ -14,7 +14,6 @@ st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
     [data-testid="stMetricLabel"] { font-size: 1.0vw !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -22,7 +21,6 @@ st.markdown("""
 def get_data():
     ticker_sym = "^NDX"
     try:
-        # Using your Massive Key: RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp
         url = f"https://api.massive.com/v1/finance/yahoo/ticker/{ticker_sym}/full?apikey=RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
@@ -33,7 +31,6 @@ def get_data():
             return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts']), hv
     except:
         pass
-
     try:
         tk = yf.Ticker(ticker_sym)
         hist = tk.history(period="5d")
@@ -53,21 +50,15 @@ def calc_rev(strike, spot):
 spot, expiry, calls, puts, hv = get_data()
 
 if spot is not None and not calls.empty:
-    # Standardize column names
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
-    # FIX: Robust Gamma Handling (Prevents the Line 61 Crash)
     def clean_gamma(df):
-        if 'gamma' not in df.columns:
-            df['gamma'] = 0.0001
+        if 'gamma' not in df.columns: df['gamma'] = 0.0001
         df['gamma'] = pd.to_numeric(df['gamma'], errors='coerce').fillna(0.0001)
         return df
 
-    calls = clean_gamma(calls)
-    puts = clean_gamma(puts)
-    
-    # Scale GEX (OI * Gamma * 1000) so bars are prominent
+    calls, puts = clean_gamma(calls), clean_gamma(puts)
     calls['gex'] = (calls['openinterest'] * calls['gamma']) * 1000
     puts['gex'] = (puts['openinterest'] * puts['gamma']) * 1000 * -1
     
@@ -78,19 +69,20 @@ if spot is not None and not calls.empty:
         all_gex['cum_gex'] = all_gex['gex'].cumsum()
         gamma_flip = all_gex.iloc[np.abs(all_gex['cum_gex']).argmin()]['strike']
         
-        # IV Metrics
+        # Sentiment Logic
         atm_c = calls.iloc[(calls['strike'] - spot).abs().argmin()]
         atm_p = puts.iloc[(puts['strike'] - spot).abs().argmin()]
         avg_iv = (atm_c['impliedvolatility'] + atm_p['impliedvolatility']) / 2 * 100
         skew = (atm_p['impliedvolatility'] - atm_c['impliedvolatility']) * 100
-        bias = "🟢 BULLISH" if skew < 0 else "🔴 BEARISH"
+        bias = "🔴 BEARISH" if skew > 0 else "🟢 BULLISH"
+        status = "⚡ VOLATILE" if spot < gamma_flip else "🛡️ STABLE"
 
-        # 4. FULL UI RESTORATION
-        tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV/Strike Analysis", "🗺️ Heatmap"])
+        # 4. UI RESTORATION
+        tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV/Bias Analysis", "🗺️ Heatmap"])
         
         with tab1:
-            st.subheader(f"NDX Sniper Profile | Spot: {spot:,.2f} | Flip: {gamma_flip:,.0f}")
-            fig = px.bar(all_gex, x='strike', y='gex', color='gex', color_continuous_scale='RdYlGn', labels={'gex': 'Gamma Power'})
+            st.subheader(f"NDX Sniper | Spot: {spot:,.2f}")
+            fig = px.bar(all_gex, x='strike', y='gex', color='gex', color_continuous_scale='RdYlGn')
             fig.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text="FLIP")
             fig.update_layout(template="plotly_dark", height=450, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
@@ -101,29 +93,37 @@ if spot is not None and not calls.empty:
                 for s in calls.nlargest(3, 'openinterest')['strike'].sort_values():
                     st.success(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
             with c2:
-                st.write("### 🟡 Metrics")
-                st.metric("Daily Bias", bias)
-                st.metric("Avg IV", f"{avg_iv:.1f}%")
-                st.metric("Gamma Flip", f"{gamma_flip:,.0f}")
+                st.write("### 🟡 Mid-Range")
+                st.metric("Current Price", f"{spot:,.2f}")
+                st.metric("Gamma Flip", f"{gamma_flip:,.2f}")
+                st.metric("Market Status", status)
             with c3:
                 st.write("### 🔴 Support")
                 for s in puts.nlargest(3, 'openinterest')['strike'].sort_values(ascending=False):
                     st.error(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
         
         with tab2:
-            st.subheader("Volatility Smile (IV vs Strike)")
-            fig_iv = px.line(all_gex, x='strike', y='impliedvolatility', color_discrete_sequence=['#00f2ff'])
-            fig_iv.add_vline(x=spot, line_color="white", line_dash="dot", annotation_text="PRICE")
-            fig_iv.update_layout(template="plotly_dark", height=400)
-            st.plotly_chart(fig_iv, use_container_width=True)
+            st.subheader("Volatility & Bias Profile")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Daily Bias", bias)
+            m2.metric("Avg IV", f"{avg_iv:.1f}%")
+            m3.metric("Historical Vol", f"{hv:.1f}%")
             
-            st.write("### Detailed Option Chain")
-            st.dataframe(all_gex[['strike', 'openinterest', 'impliedvolatility', 'gex']].tail(20), use_container_width=True)
+            # IV vs HV Chart
+            fig_vol = px.bar(x=['Implied Vol (IV)', 'Historical Vol (HV)'], y=[avg_iv, hv], 
+                             color=['IV', 'HV'], title="Volatility Comparison")
+            fig_vol.update_layout(template="plotly_dark", showlegend=False)
+            st.plotly_chart(fig_vol, use_container_width=True)
+
+            # IV Smile
+            st.write("### Implied Volatility Curve")
+            fig_iv = px.line(all_gex, x='strike', y='impliedvolatility', color_discrete_sequence=['#00f2ff'])
+            fig_iv.update_layout(template="plotly_dark")
+            st.plotly_chart(fig_iv, use_container_width=True)
             
         with tab3:
             st.subheader("Gamma Liquidity Heatmap")
             fig_heat = px.density_heatmap(all_gex, x="strike", y="openinterest", z="gex", color_continuous_scale="Viridis")
-            fig_heat.update_layout(template="plotly_dark", height=500)
             st.plotly_chart(fig_heat, use_container_width=True)
 else:
     st.warning("📡 Market Data Source Busy. Automatic Retry Active.")
