@@ -48,11 +48,8 @@ if spot:
     # Logic for GEX and Gamma Flip
     calls['GEX'] = calls['openInterest'] * (calls['gamma'] if 'gamma' in calls.columns else 0.1)
     puts['GEX'] = puts['openInterest'] * (puts['gamma'] if 'gamma' in puts.columns else 0.1) * -1
-    
-    # Calculate Gamma Flip Point
     all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]]).sort_values('strike')
     all_gex['cumulative'] = all_gex['GEX'].cumsum()
-    # Find where cumulative GEX crosses zero
     zero_cross = all_gex.iloc[(all_gex['cumulative']).abs().argsort()[:1]]
     gamma_flip = zero_cross['strike'].values[0]
 
@@ -61,15 +58,14 @@ if spot:
     atm_put_iv = puts.iloc[(puts['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     avg_iv = (atm_call_iv + atm_put_iv) / 2
     skew = atm_put_iv - atm_call_iv
-    regime = "⚡ VOLATILE (Trend)" if avg_iv > hv + 2 else "🛡️ COMPLACENT (Mean Rev)" if avg_iv < hv - 2 else "⚖️ NEUTRAL"
+    regime = "🛡️ COMPLACENT (Mean Rev)" if avg_iv < hv - 2 else "⚡ VOLATILE (Trend)" if avg_iv > hv + 2 else "⚖️ NEUTRAL"
     bias = "🔴 BEARISH" if skew > 2.0 else "🟢 BULLISH" if skew < -0.5 else "🟡 NEUTRAL"
 
-    tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap", "📖 Trade Manual"])
 
     with tab1:
         st.subheader(f"NDX Gamma Profile | Spot: {spot:,.2f}")
         fig_gamma = px.bar(all_gex, x='strike', y='GEX', color='GEX', color_continuous_scale='RdYlGn')
-        # Add Flip Line to main chart
         fig_gamma.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text="GAMMA FLIP")
         fig_gamma.update_layout(template="plotly_dark", height=400, showlegend=False)
         st.plotly_chart(fig_gamma, use_container_width=True)
@@ -120,10 +116,28 @@ if spot:
         ])
         fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
         fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white")
-        # Add Gamma Flip to Heatmap
         fig_heat.add_vline(x=gamma_flip, line_width=2, line_dash="dot", line_color="orange")
         fig_heat.update_layout(template="plotly_dark", height=500, hovermode="closest")
         st.plotly_chart(fig_heat, use_container_width=True)
+
+    with tab4:
+        st.header("🎯 Sniper Strategy Manual")
+        st.markdown("""
+        ### 1. The Setup (6:30 AM EST)
+        * **Regime Check:** Ensure Regime is **🛡️ COMPLACENT**. Reversals are risky in **⚡ VOLATILE** regimes.
+        * **Gamma Flip:** Identify the Orange Line. Longs are safer **ABOVE** the flip; Shorts are safer **BELOW** it.
+        
+        ### 2. The Execution
+        * **Find the Wall:** Look for a strike on Tab 1 with **>80% Reversal Probability**.
+        * **Heatmap Proof:** Switch to Tab 3. Does that strike have a **Bright Yellow Box** (High Liquidity)?
+        * **Skew Filter:** Check Tab 2. If Skew is > 2.0, be aggressive with Shorts but cautious with Longs.
+        
+        ### 3. The Trade
+        * **Entry:** Set Limit Order at the Strike price.
+        * **Target:** 50 Points (NQ/MNQ).
+        * **Invalidation:** If Price stays 30+ points beyond the wall for more than 5 minutes, the wall has likely "snapped."
+        """)
+        st.info("Remember: News events (CPI/FOMC) override Gamma. Do not snipe 15 mins before or after major data.")
 
 else:
     st.warning("Fetching Market Data...")
