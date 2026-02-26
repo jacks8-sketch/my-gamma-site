@@ -17,33 +17,32 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. DATA FETCHING (Multi-Source Logic)
+# 2. DATA FETCHING (Reliable Multi-Source)
 def get_data():
+    ticker_sym = "^NDX"
     # Attempt 1: Massive Proxy (Bypasses all blocks)
     try:
-        API_KEY = "RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp"
-        # Using the Massive Yahoo Proxy endpoint
-        url = f"https://api.massive.com/v1/finance/yahoo/ticker/^NDX/full?apikey={API_KEY}"
+        # Key: RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp
+        url = f"https://api.massive.com/v1/finance/yahoo/ticker/{ticker_sym}/full?apikey=RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             spot = data['price']['regularMarketPrice']
             opt_data = data['options'][0]
-            return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts']), 18.5
+            return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts'])
     except:
         pass
 
-    # Attempt 2: Stealth yfinance (Direct Fallback)
+    # Attempt 2: Direct Fallback
     try:
-        tk = yf.Ticker("^NDX")
+        tk = yf.Ticker(ticker_sym)
         hist = tk.history(period="5d")
         spot = hist['Close'].iloc[-1]
         exp = tk.options[0]
         chain = tk.option_chain(exp)
-        return spot, exp, chain.calls, chain.puts, 18.5
-    except Exception as e:
-        st.sidebar.error(f"System Error: {e}")
-        return None, None, None, None, None
+        return spot, exp, chain.calls, chain.puts
+    except:
+        return None, None, None, None
 
 def calc_rev(strike, spot):
     diff = abs(spot - strike)
@@ -51,25 +50,33 @@ def calc_rev(strike, spot):
     return round(min(98.0, base), 1)
 
 # 3. EXECUTION
-spot, expiry, calls, puts, hv = get_data()
+spot, expiry, calls, puts = get_data()
 
 if spot is not None and not calls.empty:
-    # Ensure Column Names are consistent across APIs
+    # Standardize column names (fixes the AttributeError)
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
-    # Calculate GEX (using proxy gamma if actual gamma is 0)
-    calls['gex'] = calls['openinterest'] * calls.get('gamma', 0.0001).fillna(0.0001).replace(0, 0.0001)
-    puts['gex'] = puts['openinterest'] * puts.get('gamma', 0.0001).fillna(0.0001).replace(0, 0.0001) * -1
+    # Calculate GEX safely
+    if 'gamma' not in calls.columns: calls['gamma'] = 0.0001
+    if 'gamma' not in puts.columns: puts['gamma'] = 0.0001
+    
+    # Fill missing Gamma values before calculating
+    calls['gamma'] = calls['gamma'].fillna(0.0001).replace(0, 0.0001)
+    puts['gamma'] = puts['gamma'].fillna(0.0001).replace(0, 0.0001)
+    
+    calls['gex'] = calls['openinterest'] * calls['gamma']
+    puts['gex'] = puts['openinterest'] * puts['gamma'] * -1
     
     all_gex = pd.concat([calls, puts])
     all_gex = all_gex[(all_gex['strike'] > spot * 0.94) & (all_gex['strike'] < spot * 1.06)].sort_values('strike')
     
     if not all_gex.empty:
         all_gex['cum_gex'] = all_gex['gex'].cumsum()
-        gamma_flip = all_gex.iloc[np.abs(all_gex['cum_gex']).argmin()]['strike']
+        flip_idx = np.abs(all_gex['cum_gex']).argmin()
+        gamma_flip = all_gex.iloc[flip_idx]['strike']
         
-        # UI TABS (The Original Layout)
+        # 4. UI RESTORATION
         tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 Metrics", "🗺️ Heatmap"])
         
         with tab1:
@@ -94,13 +101,13 @@ if spot is not None and not calls.empty:
                     st.error(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
         
         with tab2:
-            st.metric("Price Action", f"{spot:,.2f}")
+            st.metric("Current Price", f"{spot:,.2f}")
             st.metric("Gamma Pivot", f"{gamma_flip:,.2f}")
             
         with tab3:
-            st.subheader("Gamma Liquidity Map")
+            st.subheader("Structural Heatmap")
             fig_heat = px.density_heatmap(all_gex, x="strike", y="openinterest", z="gex", color_continuous_scale="Viridis")
             fig_heat.update_layout(template="plotly_dark")
             st.plotly_chart(fig_heat, use_container_width=True)
 else:
-    st.warning("📡 Market Data Connection Pending... Refreshing in 60s.")
+    st.warning("📡 Market Data Connection Pending... If this takes more than 30s, refresh manually.")
