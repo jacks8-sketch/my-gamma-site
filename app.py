@@ -109,16 +109,30 @@ if spot:
         st.plotly_chart(fig_vol, use_container_width=True)
 
     with tab3:
-        st.subheader("Live Gamma Heatmap")
+        st.subheader("Live Gamma Liquidity Map")
+        # Narrower zoom (2% instead of 5%) for better box shape
         h_data = pd.concat([
-            calls[(calls['strike'] > spot*0.95) & (calls['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Calls'),
-            puts[(puts['strike'] > spot*0.95) & (puts['strike'] < spot*1.05)][['strike', 'openInterest']].assign(Type='Puts')
+            calls[(calls['strike'] > spot*0.98) & (calls['strike'] < spot*1.02)][['strike', 'openInterest']].assign(Type='Calls'),
+            puts[(puts['strike'] > spot*0.98) & (puts['strike'] < spot*1.02)][['strike', 'openInterest']].assign(Type='Puts')
         ])
-        fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
-        fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white")
+        
+        # Use hist2d style for cleaner "blocks"
+        fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", 
+                                      color_continuous_scale="Viridis",
+                                      nbinsx=40) # Higher bins for more granular squares
+        
+        fig_heat.add_vline(x=spot, line_width=4, line_dash="dash", line_color="white")
         fig_heat.add_vline(x=gamma_flip, line_width=2, line_dash="dot", line_color="orange")
-        fig_heat.update_layout(template="plotly_dark", height=500, hovermode="closest")
+        
+        fig_heat.update_layout(
+            template="plotly_dark", 
+            height=450, 
+            hovermode="closest",
+            xaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+        )
         st.plotly_chart(fig_heat, use_container_width=True)
+        st.info("Heatmap is zoomed to ±2% of Spot. Bright yellow blocks = Heavy Structural Walls.")
 
     with tab4:
         st.header("🎯 Sniper Strategy Manual")
