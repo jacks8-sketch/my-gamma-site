@@ -8,7 +8,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # 1. SETUP
 st_autorefresh(interval=60000, key="datarefresh")
-st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
+st.set_page_config(page_title="💰", layout="wide")
 
 st.markdown("""
     <style>
