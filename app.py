@@ -21,13 +21,13 @@ st.markdown("""
 def get_data():
     ticker_sym = "^NDX"
     try:
+        # Massive API Key: RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp
         url = f"https://api.massive.com/v1/finance/yahoo/ticker/{ticker_sym}/full?apikey=RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             spot = data['price']['regularMarketPrice']
             opt_data = data['options'][0]
-            # Use real price history for LVNs
             tk = yf.Ticker(ticker_sym)
             hist = tk.history(period="60d")
             return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts']), hist
@@ -37,9 +37,7 @@ def get_data():
 
 def calc_rev(strike, spot, lvns):
     diff = abs(spot - strike)
-    # Base probability
     base = 45 + (diff * 0.4)
-    # Boost if strike is near a Low Volume Node (Structural Support/Resist)
     if any(abs(strike - lvn) < 40 for lvn in lvns):
         base += 15
     return round(min(99.0, base), 1)
@@ -51,12 +49,11 @@ if spot is not None and not calls.empty:
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
-    # Calculate LVNs (Price areas with least time spent = High Reversal Odds)
+    # Calculate LVNs (Structural Reversal Nodes)
     price_bins = pd.cut(hist['Close'], bins=50)
     counts = price_bins.value_counts()
     lvns = [bin.mid for bin, count in counts.items() if count <= counts.quantile(0.15)]
     
-    # Fix Gamma & GEX
     def clean_gamma(df):
         if 'gamma' not in df.columns: df['gamma'] = 0.0001
         df['gamma'] = pd.to_numeric(df['gamma'], errors='coerce').fillna(0.0001)
@@ -73,7 +70,7 @@ if spot is not None and not calls.empty:
         all_gex['cum_gex'] = all_gex['gex'].cumsum()
         gamma_flip = all_gex.iloc[np.abs(all_gex['cum_gex']).argmin()]['strike']
         
-        # IV / Vol metrics
+        # Volatility calculations
         hv = hist['Close'].pct_change().tail(20).std() * np.sqrt(252) * 100
         atm_idx = (calls['strike'] - spot).abs().argmin()
         avg_iv = calls.iloc[atm_idx]['impliedvolatility'] * 100
@@ -99,7 +96,7 @@ if spot is not None and not calls.empty:
                     st.success(f"{s:,.0f} | {calc_rev(s, spot, lvns)}% Rev")
             with c2:
                 st.write("### 🟡 Mid-Range (LVN)")
-                # Find strikes closest to structural LVNs
+                # 3 Mid-Range strikes near structural LVNs
                 mid_strikes = sorted(lvns, key=lambda x: abs(x - spot))[1:4]
                 for s in sorted(mid_strikes):
                     st.warning(f"{s:,.0f} | {calc_rev(s, spot, lvns)}% Rev")
@@ -115,9 +112,9 @@ if spot is not None and not calls.empty:
             col_b.metric("Gamma Flip", f"{gamma_flip:,.0f}")
             col_c.metric("Market Status", status)
             
-            # Intended Volume (OI) vs Historical Vol Chart
-            fig_vol = px.bar(x=['Implied Vol (IV)', 'Historical Vol (HV)'], y=[avg_iv, hv], 
-                             color=['IV', 'HV'], title="Intended Vol (Market Expectation) vs Realized Vol")
+            # Intended Vol (IV) vs Realized Vol (HV)
+            fig_vol = px.bar(x=['Intended Vol (IV)', 'Historical Vol (HV)'], y=[avg_iv, hv], 
+                             color=['IV', 'HV'], title="Market Expectation vs. Realized Vol")
             fig_vol.update_layout(template="plotly_dark", showlegend=False)
             st.plotly_chart(fig_vol, use_container_width=True)
 
