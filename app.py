@@ -7,17 +7,11 @@ import time
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# Auto-refresh every 60 seconds
 st_autorefresh(interval=60000, key="datarefresh")
 
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
-st.markdown("""
-    <style>
-    [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
-    [data-testid="stMetricLabel"] { font-size: 1.0vw !important; }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("<style>[data-testid='stMetricValue'] { font-size: 1.8vw !important; }</style>", unsafe_allow_html=True)
 
 ndx = yf.Ticker("^NDX")
 
@@ -27,17 +21,26 @@ def get_data():
             hist_long = ndx.history(period="60d")
             if hist_long.empty: continue
             spot = hist_long['Close'].iloc[-1]
+            
+            # HV Calculation
             hist_long['returns'] = hist_long['Close'].pct_change()
             hv = hist_long['returns'].tail(20).std() * np.sqrt(252) * 100
             
+            # LVN Calculation
             price_bins = pd.cut(hist_long['Close'], bins=50)
             node_counts = price_bins.value_counts()
-            lvn_threshold = node_counts.quantile(0.2)
-            lvns = [bin.mid for bin, count in node_counts.items() if count <= lvn_threshold]
+            lvns = [bin.mid for bin, count in node_counts.items() if count <= node_counts.quantile(0.2)]
             
-            expiries = ndx.options
-            chain = ndx.option_chain(expiries[0])
-            return spot, expiries[0], chain.calls, chain.puts, hv, lvns
+            # Options Data (Front Month Only)
+            expiry = ndx.options[0]
+            chain = ndx.option_chain(expiry)
+            calls, puts = chain.calls, chain.puts
+            
+            # Clean data: Remove 0 OI and far OTM strikes that skew the flip
+            calls = calls[calls['openInterest'] > 5]
+            puts = puts[puts['openInterest'] > 5]
+            
+            return spot, expiry, calls, puts, hv, lvns
         except:
             time.sleep(1)
     return None, None, None, None, None, None
@@ -45,113 +48,75 @@ def get_data():
 spot, expiry, calls, puts, hv, lvns = get_data()
 
 if spot:
-    # Logic for GEX and Gamma Flip
+    # GEX Calculation
     calls['GEX'] = calls['openInterest'] * (calls['gamma'] if 'gamma' in calls.columns else 0.1)
     puts['GEX'] = puts['openInterest'] * (puts['gamma'] if 'gamma' in puts.columns else 0.1) * -1
-    all_gex = pd.concat([calls[['strike', 'GEX']], puts[['strike', 'GEX']]]).sort_values('strike')
-    all_gex['cumulative'] = all_gex['GEX'].cumsum()
-    zero_cross = all_gex.iloc[(all_gex['cumulative']).abs().argsort()[:1]]
-    gamma_flip = zero_cross['strike'].values[0]
+    
+    # Accurate Gamma Flip (focused on active strikes near spot)
+    active_range = (spot * 0.85, spot * 1.15)
+    all_gex = pd.concat([calls, puts])
+    all_gex = all_gex[(all_gex['strike'] > active_range[0]) & (all_gex['strike'] < active_range[1])].sort_values('strike')
+    all_gex['cum_gex'] = all_gex['GEX'].cumsum()
+    
+    # Find the zero cross
+    flip_idx = np.abs(all_gex['cum_gex']).argmin()
+    gamma_flip = all_gex.iloc[flip_idx]['strike']
 
-    # Logic for Bias/Regime
+    # Bias Logic
     atm_call_iv = calls.iloc[(calls['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     atm_put_iv = puts.iloc[(puts['strike'] - spot).abs().argsort()[:1]]['impliedVolatility'].iloc[0] * 100
     avg_iv = (atm_call_iv + atm_put_iv) / 2
     skew = atm_put_iv - atm_call_iv
-    regime = "🛡️ COMPLACENT (Mean Rev)" if avg_iv < hv - 2 else "⚡ VOLATILE (Trend)" if avg_iv > hv + 2 else "⚖️ NEUTRAL"
-    bias = "🔴 BEARISH" if skew > 2.0 else "🟢 BULLISH" if skew < -0.5 else "🟡 NEUTRAL"
+    regime = "🛡️ COMPLACENT" if avg_iv < hv - 2 else "⚡ VOLATILE" if avg_iv > hv + 2 else "⚖️ NEUTRAL"
 
     tab1, tab2, tab3, tab4 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap", "📖 Trade Manual"])
 
     with tab1:
-        st.subheader(f"NDX Gamma Profile | Spot: {spot:,.2f}")
+        st.subheader(f"NDX Profile | Spot: {spot:,.2f}")
         fig_gamma = px.bar(all_gex, x='strike', y='GEX', color='GEX', color_continuous_scale='RdYlGn')
-        fig_gamma.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text="GAMMA FLIP")
-        fig_gamma.update_layout(template="plotly_dark", height=400, showlegend=False)
+        fig_gamma.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text=f"FLIP: {gamma_flip:,.0f}")
+        fig_gamma.update_layout(template="plotly_dark", height=400)
         st.plotly_chart(fig_gamma, use_container_width=True)
 
-        def calculate_advanced_reversal(strike, spot, lvns, skew, is_support=False):
+        def calc_rev(strike, spot, lvns, skew, is_support):
             diff = abs(spot - strike)
-            if diff <= 15: base = 10 + (diff * 2)
-            elif diff <= 60: base = 45 + (diff * 0.6)
-            else: base = 75 + (diff / 25)
-            if any(abs(strike - lvn) < 25 for lvn in lvns): base += 8
-            if is_support:
-                if skew > 1.5: base -= 7
-                elif skew < 0.1: base += 5
-            else:
-                if skew > 1.5: base += 5
-                elif skew < -0.5: base -= 7
-            return round(min(97.0, base), 2)
+            base = 45 + (diff * 0.5) if diff <= 80 else 85
+            if any(abs(strike - lvn) < 30 for lvn in lvns): base += 10
+            base = base - 10 if (is_support and skew > 2.0) else base + 5 if (not is_support and skew > 2.0) else base
+            return round(min(98.0, base), 1)
 
-        st.subheader("Sniper Entry Levels")
-        col1, col2, col3 = st.columns(3)
-        top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
-        top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
-        with col1:
-            for s in top_c['strike'][:3]: st.success(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns, skew, False)}% Rev**")
-        with col2:
-            for s in top_c['strike'][3:6]: st.warning(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns, skew, False)}% Rev**")
-        with col3:
-            for s in top_p['strike'][:3]: st.error(f"Strike {s:,.0f} | **{calculate_advanced_reversal(s, spot, lvns, skew, True)}% Rev**")
+        c1, c2, c3 = st.columns(3)
+        top_c = calls.nlargest(5, 'openInterest').sort_values('strike')
+        top_p = puts.nlargest(5, 'openInterest').sort_values('strike', ascending=False)
+        with c1: 
+            st.write("### 🟢 Resistance")
+            for s in top_c['strike'][:3]: st.success(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, False)}%**")
+        with c3:
+            st.write("### 🔴 Support")
+            for s in top_p['strike'][:3]: st.error(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, True)}%**")
 
     with tab2:
-        st.subheader("Volatility & Flip Level")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Gamma Flip", f"{gamma_flip:,.0f}")
-        c2.metric("Daily Bias", bias)
-        c3.metric("Regime", regime.split('(')[0].strip())
-        c4.metric("IV/Put Skew", f"{skew:.2f}")
-
-        vol_df = pd.DataFrame({'Type': ['Implied Vol', 'Historical Vol'], 'Value': [avg_iv, hv] })
-        fig_vol = px.bar(vol_df, x='Type', y='Value', color='Type', color_discrete_map={'Implied Vol': '#00CC96', 'Historical Vol': '#636EFA'})
-        fig_vol.update_layout(template="plotly_dark", height=300, showlegend=False)
-        st.plotly_chart(fig_vol, use_container_width=True)
+        st.subheader("Market Sentiment")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Gamma Flip", f"{gamma_flip:,.0f}")
+        col_m2.metric("Regime", regime)
+        col_m3.metric("Put Skew", f"{skew:.2f}")
 
     with tab3:
-        st.subheader("Live Gamma Liquidity Map")
-        # Narrower zoom (2% instead of 5%) for better box shape
-        h_data = pd.concat([
-            calls[(calls['strike'] > spot*0.98) & (calls['strike'] < spot*1.02)][['strike', 'openInterest']].assign(Type='Calls'),
-            puts[(puts['strike'] > spot*0.98) & (puts['strike'] < spot*1.02)][['strike', 'openInterest']].assign(Type='Puts')
-        ])
+        st.subheader("Structural Liquidity Map")
+        # Filter for the "Kill Zone"
+        h_data = all_gex[(all_gex['strike'] > spot*0.97) & (all_gex['strike'] < spot*1.03)]
+        h_data['Type'] = np.where(h_data['GEX'] > 0, 'Calls', 'Puts')
         
-        # Use hist2d style for cleaner "blocks"
+        # Fixed Heatmap Logic
         fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", 
-                                      color_continuous_scale="Viridis",
-                                      nbinsx=40) # Higher bins for more granular squares
-        
-        fig_heat.add_vline(x=spot, line_width=4, line_dash="dash", line_color="white")
-        fig_heat.add_vline(x=gamma_flip, line_width=2, line_dash="dot", line_color="orange")
-        
-        fig_heat.update_layout(
-            template="plotly_dark", 
-            height=450, 
-            hovermode="closest",
-            xaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
-            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)')
-        )
+                                      color_continuous_scale="Viridis", nbinsx=30, nbinsy=2)
+        fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white", annotation_text="PRICE")
+        fig_heat.update_layout(template="plotly_dark", height=500, xaxis=dict(title="Strike Price", showgrid=True))
         st.plotly_chart(fig_heat, use_container_width=True)
-        st.info("Heatmap is zoomed to ±2% of Spot. Bright yellow blocks = Heavy Structural Walls.")
 
     with tab4:
-        st.header("🎯 Sniper Strategy Manual")
-        st.markdown("""
-        ### 1. The Setup (6:30 AM EST)
-        * **Regime Check:** Ensure Regime is **🛡️ COMPLACENT**. Reversals are risky in **⚡ VOLATILE** regimes.
-        * **Gamma Flip:** Identify the Orange Line. Longs are safer **ABOVE** the flip; Shorts are safer **BELOW** it.
-        
-        ### 2. The Execution
-        * **Find the Wall:** Look for a strike on Tab 1 with **>80% Reversal Probability**.
-        * **Heatmap Proof:** Switch to Tab 3. Does that strike have a **Bright Yellow Box** (High Liquidity)?
-        * **Skew Filter:** Check Tab 2. If Skew is > 2.0, be aggressive with Shorts but cautious with Longs.
-        
-        ### 3. The Trade
-        * **Entry:** Set Limit Order at the Strike price.
-        * **Target:** 50 Points (NQ/MNQ).
-        * **Invalidation:** If Price stays 30+ points beyond the wall for more than 5 minutes, the wall has likely "snapped."
-        """)
-        st.info("Remember: News events (CPI/FOMC) override Gamma. Do not snipe 15 mins before or after major data.")
+        st.info("Check Tab 2 for the Gamma Flip level. If price is BELOW the flip, Support Walls are more likely to break.")
 
 else:
-    st.warning("Fetching Market Data...")
+    st.warning("Syncing Market Data...")
