@@ -16,31 +16,43 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. DATA FETCHING (Using your Massive API Key)
+# 2. DATA FETCHING (Massive API Fix)
 def get_data():
     try:
-        # Using your provided key to bypass all Yahoo blocks
+        # Using your key: RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp
         MASSIVE_KEY = "RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp"
         
-        # We fetch via Massive's Yahoo Finance proxy
-        url = f"https://api.massive.com/v1/finance/yahoo/ticker/^NDX/full?apikey={MASSIVE_KEY}"
-        response = requests.get(url).json()
+        # Massive often prefers 'NDX' without the '^' for their Yahoo proxy
+        url = f"https://api.massive.com/v1/finance/yahoo/ticker/NDX/full?apikey={MASSIVE_KEY}"
+        response = requests.get(url)
+        
+        # Check if the response is actually JSON
+        if response.status_code != 200:
+            st.sidebar.error(f"API Access Denied: {response.status_code}")
+            return None, None, None, None, None
+
+        data = response.json()
         
         # Extract Spot Price & History
-        spot = response['price']['regularMarketPrice']
-        hv = response['stats'].get('historicalVolatility', 18.5) # Fallback to 18.5 if missing
+        # We navigate the JSON tree based on Massive's typical structure
+        spot = data.get('price', {}).get('regularMarketPrice')
+        stats = data.get('stats', {})
+        hv = stats.get('historicalVolatility', 18.5)
         
         # Extract Options Data
-        opt_data = response['options'][0] # Front month
-        expiry = opt_data['expirationDate']
+        options_list = data.get('options', [])
+        if not options_list:
+            return None, None, None, None, None
+            
+        opt_data = options_list[0] # Monthly expiry
+        expiry = opt_data.get('expirationDate')
         
-        calls = pd.DataFrame(opt_data['calls'])
-        puts = pd.DataFrame(opt_data['puts'])
+        calls = pd.DataFrame(opt_data.get('calls', []))
+        puts = pd.DataFrame(opt_data.get('puts', []))
         
         return spot, expiry, calls, puts, hv
     except Exception as e:
-        # Log error to sidebar for debugging
-        st.sidebar.error(f"Fetch Error: {e}")
+        st.sidebar.error(f"Data Error: {str(e)}")
         return None, None, None, None, None
 
 def calc_rev(strike, spot, hv):
@@ -52,9 +64,9 @@ def calc_rev(strike, spot, hv):
 spot, expiry, calls, puts, hv = get_data()
 
 if spot is not None and not calls.empty:
-    # Ensure Gamma exists (fallback to proxy if Yahoo sends 0)
-    calls['gamma'] = calls['gamma'].fillna(0.0001).replace(0, 0.0001)
-    puts['gamma'] = puts['gamma'].fillna(0.0001).replace(0, 0.0001)
+    # Ensure Gamma exists (fallback to 0.1 proxy if missing)
+    calls['gamma'] = calls.get('gamma', 0.1).fillna(0.1)
+    puts['gamma'] = puts.get('gamma', 0.1).fillna(0.1)
     
     calls['GEX'] = calls['openInterest'] * calls['gamma']
     puts['GEX'] = puts['openInterest'] * puts['gamma'] * -1
@@ -64,7 +76,6 @@ if spot is not None and not calls.empty:
     all_gex = all_gex[(all_gex['strike'] > spot * 0.94) & (all_gex['strike'] < spot * 1.06)].sort_values('strike')
     
     if not all_gex.empty:
-        # Calculations
         all_gex['cum_gex'] = all_gex['GEX'].cumsum()
         flip_idx = np.abs(all_gex['cum_gex']).argmin()
         gamma_flip = all_gex.iloc[flip_idx]['strike']
@@ -78,8 +89,8 @@ if spot is not None and not calls.empty:
         regime = "🛡️ COMPLACENT" if avg_iv < hv - 2 else "⚡ VOLATILE" if avg_iv > hv + 2 else "⚖️ NEUTRAL"
         bias = "🔴 BEARISH" if skew > 1.5 else "🟢 BULLISH" if skew < -0.5 else "🟡 NEUTRAL"
 
-        # 4. UI RESTORATION (The Original Tabs)
-        tab1, tab2, tab3, tab4 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap", "📖 Trade Manual"])
+        # 4. TABS
+        tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap"])
 
         with tab1:
             st.subheader(f"NDX Sniper Profile | Spot: {spot:,.2f}")
@@ -104,26 +115,18 @@ if spot is not None and not calls.empty:
 
         with tab2:
             st.subheader("Volatility Analysis")
-            m1, m2, m3 = st.columns(3)
+            m1, m2 = st.columns(2)
             m1.metric("Daily Bias", bias)
             m2.metric("Regime", regime)
-            m3.metric("Skew", f"{skew:.2f}")
             st.plotly_chart(px.bar(x=['IV', 'HV'], y=[avg_iv, hv], color=['IV', 'HV'], template="plotly_dark"), use_container_width=True)
 
         with tab3:
             st.subheader("Structural Heatmap")
             h_data = all_gex.copy()
             h_data['Type'] = np.where(h_data['GEX'] > 0, 'Calls', 'Puts')
-            fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis", nbinsx=40)
-            fig_heat.update_layout(template="plotly_dark", height=500)
+            fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", color_continuous_scale="Viridis")
             st.plotly_chart(fig_heat, use_container_width=True)
-
-        with tab4:
-            st.header("🎯 Trade Manual")
-            st.write("1. If Price > Flip, market is in 'Positive Gamma' (Stable).")
-            st.write("2. High 'Rev %' at major OI strikes indicates likely price exhaustion.")
-
     else:
-        st.error("Massive connected, but NDX data range is narrow. Refreshing...")
+        st.error("Data range too narrow. Check back in a moment.")
 else:
-    st.info("📡 Connecting to Massive Data Stream... Please wait 15 seconds.")
+    st.info("📡 Data source is resetting... Please wait 15 seconds.")
