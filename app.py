@@ -28,7 +28,6 @@ def get_data():
             data = resp.json()
             spot = data['price']['regularMarketPrice']
             opt_data = data['options'][0]
-            # Fetch HV proxy from stats if available
             hv = data.get('stats', {}).get('historicalVolatility', 18.5)
             return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts']), hv
     except:
@@ -57,11 +56,14 @@ if spot is not None and not calls.empty:
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
-    # Calculate GEX (with scaling so bars are visible)
-    calls['gamma'] = calls.get('gamma', 0.0001).fillna(0.0001).replace(0, 0.0001)
-    puts['gamma'] = puts.get('gamma', 0.0001).fillna(0.0001).replace(0, 0.0001)
+    # Fix the Gamma logic (Ensures bars show up on the Sniper Chart)
+    if 'gamma' not in calls.columns: calls['gamma'] = 0.0001
+    if 'gamma' not in puts.columns: puts['gamma'] = 0.0001
     
-    # Scale GEX for visibility: (OI * Gamma) * 100
+    calls['gamma'] = pd.to_numeric(calls['gamma'], errors='coerce').fillna(0.0001)
+    puts['gamma'] = pd.to_numeric(puts['gamma'], errors='coerce').fillna(0.0001)
+    
+    # Scale GEX (OI * Gamma * 100) so the chart isn't flat
     calls['gex'] = (calls['openinterest'] * calls['gamma']) * 100
     puts['gex'] = (puts['openinterest'] * puts['gamma']) * 100 * -1
     
@@ -84,7 +86,7 @@ if spot is not None and not calls.empty:
         
         with tab1:
             st.subheader(f"NDX Sniper | Spot: {spot:,.2f} | Flip: {gamma_flip:,.0f}")
-            fig = px.bar(all_gex, x='strike', y='gex', color='gex', color_continuous_scale='RdYlGn', labels={'gex': 'Gamma Exposure'})
+            fig = px.bar(all_gex, x='strike', y='gex', color='gex', color_continuous_scale='RdYlGn', labels={'gex': 'Gamma Power'})
             fig.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text="FLIP")
             fig.update_layout(template="plotly_dark", height=450)
             st.plotly_chart(fig, use_container_width=True)
@@ -104,19 +106,19 @@ if spot is not None and not calls.empty:
                     st.error(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
         
         with tab2:
-            st.subheader("IV vs Strike Price")
-            fig_iv = px.line(all_gex, x='strike', y='impliedvolatility', color_discrete_sequence=['cyan'])
-            fig_iv.add_vline(x=spot, line_color="white", line_dash="dot")
+            st.subheader("IV Curve Analysis")
+            fig_iv = px.line(all_gex, x='strike', y='impliedvolatility', color_discrete_sequence=['#00f2ff'])
+            fig_iv.add_vline(x=spot, line_color="white", line_dash="dot", annotation_text="PRICE")
             fig_iv.update_layout(template="plotly_dark")
             st.plotly_chart(fig_iv, use_container_width=True)
             
-            st.write("### Detailed Strike Data")
-            st.dataframe(all_gex[['strike', 'openinterest', 'impliedvolatility', 'gex']].tail(10), use_container_width=True)
+            st.write("### Detailed Data Table")
+            st.dataframe(all_gex[['strike', 'openinterest', 'impliedvolatility', 'gex']].tail(15), use_container_width=True)
             
         with tab3:
-            st.subheader("Structural Heatmap")
+            st.subheader("Structural Gamma Heatmap")
             fig_heat = px.density_heatmap(all_gex, x="strike", y="openinterest", z="gex", color_continuous_scale="Viridis")
             fig_heat.update_layout(template="plotly_dark")
             st.plotly_chart(fig_heat, use_container_width=True)
 else:
-    st.warning("📡 Market Data Connection Pending...")
+    st.warning("📡 Market Data Connection Pending... Retrying.")
