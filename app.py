@@ -6,7 +6,7 @@ import numpy as np
 import requests
 from streamlit_autorefresh import st_autorefresh
 
-# 1. SETUP
+# 1. SETUP & THEME
 st_autorefresh(interval=60000, key="datarefresh")
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
@@ -14,6 +14,7 @@ st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
     [data-testid="stMetricLabel"] { font-size: 1.0vw !important; }
+    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -21,7 +22,7 @@ st.markdown("""
 def get_data():
     ticker_sym = "^NDX"
     try:
-        # Massive API Key: RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp
+        # Using your Massive Key: RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp
         url = f"https://api.massive.com/v1/finance/yahoo/ticker/{ticker_sym}/full?apikey=RWocAyzzUWSS6gRFmqTOiiFzDmYcpKPp"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
@@ -56,19 +57,16 @@ if spot is not None and not calls.empty:
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
-    # Fix the Gamma logic (Ensures bars show up on the Sniper Chart)
-    if 'gamma' not in calls.columns: calls['gamma'] = 0.0001
-    if 'gamma' not in puts.columns: puts['gamma'] = 0.0001
+    # CALCULATE GEX WITH VISIBILITY SCALING
+    calls['gamma'] = pd.to_numeric(calls.get('gamma', 0.0001), errors='coerce').fillna(0.0001)
+    puts['gamma'] = pd.to_numeric(puts.get('gamma', 0.0001), errors='coerce').fillna(0.0001)
     
-    calls['gamma'] = pd.to_numeric(calls['gamma'], errors='coerce').fillna(0.0001)
-    puts['gamma'] = pd.to_numeric(puts['gamma'], errors='coerce').fillna(0.0001)
-    
-    # Scale GEX (OI * Gamma * 100) so the chart isn't flat
-    calls['gex'] = (calls['openinterest'] * calls['gamma']) * 100
-    puts['gex'] = (puts['openinterest'] * puts['gamma']) * 100 * -1
+    # Scale GEX (OI * Gamma * 1000) so bars are prominent
+    calls['gex'] = (calls['openinterest'] * calls['gamma']) * 1000
+    puts['gex'] = (puts['openinterest'] * puts['gamma']) * 1000 * -1
     
     all_gex = pd.concat([calls, puts])
-    all_gex = all_gex[(all_gex['strike'] > spot * 0.94) & (all_gex['strike'] < spot * 1.06)].sort_values('strike')
+    all_gex = all_gex[(all_gex['strike'] > spot * 0.92) & (all_gex['strike'] < spot * 1.08)].sort_values('strike')
     
     if not all_gex.empty:
         all_gex['cum_gex'] = all_gex['gex'].cumsum()
@@ -81,14 +79,14 @@ if spot is not None and not calls.empty:
         skew = (atm_p['impliedvolatility'] - atm_c['impliedvolatility']) * 100
         bias = "🟢 BULLISH" if skew < 0 else "🔴 BEARISH"
 
-        # 4. UI RESTORATION
+        # 4. FULL UI RESTORATION
         tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV/Strike Analysis", "🗺️ Heatmap"])
         
         with tab1:
-            st.subheader(f"NDX Sniper | Spot: {spot:,.2f} | Flip: {gamma_flip:,.0f}")
+            st.subheader(f"NDX Sniper Profile | Spot: {spot:,.2f} | Flip: {gamma_flip:,.0f}")
             fig = px.bar(all_gex, x='strike', y='gex', color='gex', color_continuous_scale='RdYlGn', labels={'gex': 'Gamma Power'})
             fig.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text="FLIP")
-            fig.update_layout(template="plotly_dark", height=450)
+            fig.update_layout(template="plotly_dark", height=450, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
             
             c1, c2, c3 = st.columns(3)
@@ -106,19 +104,19 @@ if spot is not None and not calls.empty:
                     st.error(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
         
         with tab2:
-            st.subheader("IV Curve Analysis")
+            st.subheader("Volatility Smile (IV vs Strike)")
             fig_iv = px.line(all_gex, x='strike', y='impliedvolatility', color_discrete_sequence=['#00f2ff'])
             fig_iv.add_vline(x=spot, line_color="white", line_dash="dot", annotation_text="PRICE")
-            fig_iv.update_layout(template="plotly_dark")
+            fig_iv.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig_iv, use_container_width=True)
             
-            st.write("### Detailed Data Table")
-            st.dataframe(all_gex[['strike', 'openinterest', 'impliedvolatility', 'gex']].tail(15), use_container_width=True)
+            st.write("### Detailed Option Chain")
+            st.dataframe(all_gex[['strike', 'openinterest', 'impliedvolatility', 'gex']].tail(20), use_container_width=True)
             
         with tab3:
-            st.subheader("Structural Gamma Heatmap")
+            st.subheader("Gamma Liquidity Heatmap")
             fig_heat = px.density_heatmap(all_gex, x="strike", y="openinterest", z="gex", color_continuous_scale="Viridis")
-            fig_heat.update_layout(template="plotly_dark")
+            fig_heat.update_layout(template="plotly_dark", height=500)
             st.plotly_chart(fig_heat, use_container_width=True)
 else:
-    st.warning("📡 Market Data Connection Pending... Retrying.")
+    st.warning("📡 Market Data Source Busy. Automatic Retry Active.")
