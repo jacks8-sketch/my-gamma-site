@@ -7,11 +7,17 @@ import time
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
+# Auto-refresh every 60 seconds
 st_autorefresh(interval=60000, key="datarefresh")
 
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
-st.markdown("<style>[data-testid='stMetricValue'] { font-size: 1.8vw !important; }</style>", unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    [data-testid="stMetricValue"] { font-size: 1.8vw !important; }
+    [data-testid="stMetricLabel"] { font-size: 1.0vw !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
 ndx = yf.Ticker("^NDX")
 
@@ -85,15 +91,23 @@ if spot:
             base = base - 10 if (is_support and skew > 2.0) else base + 5 if (not is_support and skew > 2.0) else base
             return round(min(98.0, base), 1)
 
+        # RESTORED: All 3 Columns
         c1, c2, c3 = st.columns(3)
-        top_c = calls.nlargest(5, 'openInterest').sort_values('strike')
-        top_p = puts.nlargest(5, 'openInterest').sort_values('strike', ascending=False)
+        top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
+        top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
+        
         with c1: 
             st.write("### 🟢 Resistance")
-            for s in top_c['strike'][:3]: st.success(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, False)}%**")
+            for s in top_c['strike'][:3]: 
+                st.success(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, False)}% Rev**")
+        with c2:
+            st.write("### 🟡 Mid-Range")
+            for s in top_c['strike'][3:6]: 
+                st.warning(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, False)}% Rev**")
         with c3:
             st.write("### 🔴 Support")
-            for s in top_p['strike'][:3]: st.error(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, True)}%**")
+            for s in top_p['strike'][:3]: 
+                st.error(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, True)}% Rev**")
 
     with tab2:
         st.subheader("Market Sentiment")
@@ -104,11 +118,9 @@ if spot:
 
     with tab3:
         st.subheader("Structural Liquidity Map")
-        # Filter for the "Kill Zone"
-        h_data = all_gex[(all_gex['strike'] > spot*0.97) & (all_gex['strike'] < spot*1.03)]
+        h_data = all_gex[(all_gex['strike'] > spot*0.97) & (all_gex['strike'] < spot*1.03)].copy()
         h_data['Type'] = np.where(h_data['GEX'] > 0, 'Calls', 'Puts')
         
-        # Fixed Heatmap Logic
         fig_heat = px.density_heatmap(h_data, x="strike", y="Type", z="openInterest", 
                                       color_continuous_scale="Viridis", nbinsx=30, nbinsy=2)
         fig_heat.add_vline(x=spot, line_width=3, line_dash="dash", line_color="white", annotation_text="PRICE")
@@ -116,7 +128,24 @@ if spot:
         st.plotly_chart(fig_heat, use_container_width=True)
 
     with tab4:
-        st.info("Check Tab 2 for the Gamma Flip level. If price is BELOW the flip, Support Walls are more likely to break.")
+        st.header("🎯 Sniper Strategy Manual")
+        st.markdown("""
+        ### 1. The Setup (6:30 AM EST)
+        * **Regime Check:** Ensure Regime is **🛡️ COMPLACENT**. Reversals are risky in **⚡ VOLATILE** regimes.
+        * **Gamma Flip:** Identify the Orange Line. Longs are safer **ABOVE** the flip; Shorts are safer **BELOW** it.
+        
+        ### 2. The Execution
+        * **Find the Wall:** Look for a strike on Tab 1 with **>80% Reversal Probability**.
+        * **Heatmap Proof:** Switch to Tab 3. Does that strike have a **Bright Yellow Box** (High Liquidity)?
+        * **Skew Filter:** Check Tab 2. If Skew is > 2.0, be aggressive with Shorts but cautious with Longs.
+        
+        ### 3. The Trade (4-Contract Split)
+        * **Entry:** Set Limit Order at the Strike price.
+        * **Stop Loss:** 15 points behind the entry.
+        * **TP1:** Take 3 contracts off at +50 points.
+        * **Runner:** Move stop on the final contract to Break Even and target the next wall.
+        """)
+        st.info("Remember: News events (CPI/FOMC) override Gamma. Do not snipe 15 mins before or after major data.")
 
 else:
     st.warning("Syncing Market Data...")
