@@ -17,7 +17,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. DATA FETCHING
+# 2. DATA & LVN CALCULATION
 def get_data():
     ticker_sym = "^NDX"
     try:
@@ -27,32 +27,36 @@ def get_data():
             data = resp.json()
             spot = data['price']['regularMarketPrice']
             opt_data = data['options'][0]
-            hv = data.get('stats', {}).get('historicalVolatility', 18.5)
-            return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts']), hv
+            # Use real price history for LVNs
+            tk = yf.Ticker(ticker_sym)
+            hist = tk.history(period="60d")
+            return spot, opt_data['expirationDate'], pd.DataFrame(opt_data['calls']), pd.DataFrame(opt_data['puts']), hist
     except:
         pass
-    try:
-        tk = yf.Ticker(ticker_sym)
-        hist = tk.history(period="5d")
-        spot = hist['Close'].iloc[-1]
-        exp = tk.options[0]
-        chain = tk.option_chain(exp)
-        return spot, exp, chain.calls, chain.puts, 18.5
-    except:
-        return None, None, None, None, None
+    return None, None, None, None, None
 
-def calc_rev(strike, spot):
+def calc_rev(strike, spot, lvns):
     diff = abs(spot - strike)
-    base = 45 + (diff * 0.5) if diff <= 80 else 85
-    return round(min(98.0, base), 1)
+    # Base probability
+    base = 45 + (diff * 0.4)
+    # Boost if strike is near a Low Volume Node (Structural Support/Resist)
+    if any(abs(strike - lvn) < 40 for lvn in lvns):
+        base += 15
+    return round(min(99.0, base), 1)
 
 # 3. EXECUTION
-spot, expiry, calls, puts, hv = get_data()
+spot, expiry, calls, puts, hist = get_data()
 
 if spot is not None and not calls.empty:
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
+    # Calculate LVNs (Price areas with least time spent = High Reversal Odds)
+    price_bins = pd.cut(hist['Close'], bins=50)
+    counts = price_bins.value_counts()
+    lvns = [bin.mid for bin, count in counts.items() if count <= counts.quantile(0.15)]
+    
+    # Fix Gamma & GEX
     def clean_gamma(df):
         if 'gamma' not in df.columns: df['gamma'] = 0.0001
         df['gamma'] = pd.to_numeric(df['gamma'], errors='coerce').fillna(0.0001)
@@ -63,67 +67,66 @@ if spot is not None and not calls.empty:
     puts['gex'] = (puts['openinterest'] * puts['gamma']) * 1000 * -1
     
     all_gex = pd.concat([calls, puts])
-    all_gex = all_gex[(all_gex['strike'] > spot * 0.92) & (all_gex['strike'] < spot * 1.08)].sort_values('strike')
+    all_gex = all_gex[(all_gex['strike'] > spot * 0.93) & (all_gex['strike'] < spot * 1.07)].sort_values('strike')
     
     if not all_gex.empty:
         all_gex['cum_gex'] = all_gex['gex'].cumsum()
         gamma_flip = all_gex.iloc[np.abs(all_gex['cum_gex']).argmin()]['strike']
         
-        # Sentiment Logic
-        atm_c = calls.iloc[(calls['strike'] - spot).abs().argmin()]
-        atm_p = puts.iloc[(puts['strike'] - spot).abs().argmin()]
-        avg_iv = (atm_c['impliedvolatility'] + atm_p['impliedvolatility']) / 2 * 100
-        skew = (atm_p['impliedvolatility'] - atm_c['impliedvolatility']) * 100
-        bias = "🔴 BEARISH" if skew > 0 else "🟢 BULLISH"
+        # IV / Vol metrics
+        hv = hist['Close'].pct_change().tail(20).std() * np.sqrt(252) * 100
+        atm_idx = (calls['strike'] - spot).abs().argmin()
+        avg_iv = calls.iloc[atm_idx]['impliedvolatility'] * 100
+        skew = (puts.iloc[atm_idx]['impliedvolatility'] - calls.iloc[atm_idx]['impliedvolatility']) * 100
+        
+        bias = "🔴 BEARISH" if skew > 1.0 else "🟢 BULLISH"
         status = "⚡ VOLATILE" if spot < gamma_flip else "🛡️ STABLE"
 
-        # 4. UI RESTORATION
+        # 4. UI LAYOUT
         tab1, tab2, tab3 = st.tabs(["🎯 Gamma Sniper", "📊 IV/Bias Analysis", "🗺️ Heatmap"])
         
         with tab1:
-            st.subheader(f"NDX Sniper | Spot: {spot:,.2f}")
+            st.subheader(f"NDX Sniper Profile | Spot: {spot:,.2f}")
             fig = px.bar(all_gex, x='strike', y='gex', color='gex', color_continuous_scale='RdYlGn')
             fig.add_vline(x=gamma_flip, line_dash="dash", line_color="orange", annotation_text="FLIP")
-            fig.update_layout(template="plotly_dark", height=450, showlegend=False)
+            fig.update_layout(template="plotly_dark", height=420, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
             
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.write("### 🟢 Resistance")
                 for s in calls.nlargest(3, 'openinterest')['strike'].sort_values():
-                    st.success(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
+                    st.success(f"{s:,.0f} | {calc_rev(s, spot, lvns)}% Rev")
             with c2:
-                st.write("### 🟡 Mid-Range")
-                st.metric("Current Price", f"{spot:,.2f}")
-                st.metric("Gamma Flip", f"{gamma_flip:,.2f}")
-                st.metric("Market Status", status)
+                st.write("### 🟡 Mid-Range (LVN)")
+                # Find strikes closest to structural LVNs
+                mid_strikes = sorted(lvns, key=lambda x: abs(x - spot))[1:4]
+                for s in sorted(mid_strikes):
+                    st.warning(f"{s:,.0f} | {calc_rev(s, spot, lvns)}% Rev")
             with c3:
                 st.write("### 🔴 Support")
                 for s in puts.nlargest(3, 'openinterest')['strike'].sort_values(ascending=False):
-                    st.error(f"{s:,.0f} | {calc_rev(s, spot)}% Rev")
+                    st.error(f"{s:,.0f} | {calc_rev(s, spot, lvns)}% Rev")
         
         with tab2:
-            st.subheader("Volatility & Bias Profile")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Daily Bias", bias)
-            m2.metric("Avg IV", f"{avg_iv:.1f}%")
-            m3.metric("Historical Vol", f"{hv:.1f}%")
+            st.subheader("Volatility & Sentiment Profile")
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Daily Bias", bias)
+            col_b.metric("Gamma Flip", f"{gamma_flip:,.0f}")
+            col_c.metric("Market Status", status)
             
-            # IV vs HV Chart
+            # Intended Volume (OI) vs Historical Vol Chart
             fig_vol = px.bar(x=['Implied Vol (IV)', 'Historical Vol (HV)'], y=[avg_iv, hv], 
-                             color=['IV', 'HV'], title="Volatility Comparison")
+                             color=['IV', 'HV'], title="Intended Vol (Market Expectation) vs Realized Vol")
             fig_vol.update_layout(template="plotly_dark", showlegend=False)
             st.plotly_chart(fig_vol, use_container_width=True)
 
-            # IV Smile
-            st.write("### Implied Volatility Curve")
-            fig_iv = px.line(all_gex, x='strike', y='impliedvolatility', color_discrete_sequence=['#00f2ff'])
-            fig_iv.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_iv, use_container_width=True)
+            # IV Curve
+            st.write("### Implied Volatility Smile")
+            st.plotly_chart(px.line(all_gex, x='strike', y='impliedvolatility', template="plotly_dark"), use_container_width=True)
             
         with tab3:
             st.subheader("Gamma Liquidity Heatmap")
-            fig_heat = px.density_heatmap(all_gex, x="strike", y="openinterest", z="gex", color_continuous_scale="Viridis")
-            st.plotly_chart(fig_heat, use_container_width=True)
+            st.plotly_chart(px.density_heatmap(all_gex, x="strike", y="openinterest", z="gex", color_continuous_scale="Viridis"), use_container_width=True)
 else:
     st.warning("📡 Market Data Source Busy. Automatic Retry Active.")
