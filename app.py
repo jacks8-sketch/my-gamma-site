@@ -74,6 +74,7 @@ if spot:
     avg_iv = (atm_call_iv + atm_put_iv) / 2
     skew = atm_put_iv - atm_call_iv
     regime = "🛡️ COMPLACENT" if avg_iv < hv - 2 else "⚡ VOLATILE" if avg_iv > hv + 2 else "⚖️ NEUTRAL"
+    bias = "🔴 BEARISH" if skew > 2.0 else "🟢 BULLISH" if skew < -0.5 else "🟡 NEUTRAL"
 
     tab1, tab2, tab3, tab4 = st.tabs(["🎯 Gamma Sniper", "📊 IV Bias", "🗺️ Gamma Heatmap", "📖 Trade Manual"])
 
@@ -91,7 +92,6 @@ if spot:
             base = base - 10 if (is_support and skew > 2.0) else base + 5 if (not is_support and skew > 2.0) else base
             return round(min(98.0, base), 1)
 
-        # RESTORED: All 3 Columns
         c1, c2, c3 = st.columns(3)
         top_c = calls.nlargest(6, 'openInterest').sort_values('strike')
         top_p = puts.nlargest(6, 'openInterest').sort_values('strike', ascending=False)
@@ -110,11 +110,20 @@ if spot:
                 st.error(f"{s:,.0f} | **{calc_rev(s, spot, lvns, skew, True)}% Rev**")
 
     with tab2:
-        st.subheader("Market Sentiment")
-        col_m1, col_m2, col_m3 = st.columns(3)
+        st.subheader("Market Sentiment & Volatility")
+        
+        # RESTORED: All 4 metrics
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("Gamma Flip", f"{gamma_flip:,.0f}")
-        col_m2.metric("Regime", regime)
-        col_m3.metric("Put Skew", f"{skew:.2f}")
+        col_m2.metric("Daily Bias", bias)
+        col_m3.metric("Regime", regime)
+        col_m4.metric("Put Skew", f"{skew:.2f}")
+
+        # RESTORED: The Bar Chart
+        vol_df = pd.DataFrame({'Type': ['Implied Vol (Future)', 'Historical Vol (Past)'], 'Value': [avg_iv, hv] })
+        fig_vol = px.bar(vol_df, x='Type', y='Value', color='Type', color_discrete_map={'Implied Vol (Future)': '#00CC96', 'Historical Vol (Past)': '#636EFA'})
+        fig_vol.update_layout(template="plotly_dark", height=350, showlegend=False)
+        st.plotly_chart(fig_vol, use_container_width=True)
 
     with tab3:
         st.subheader("Structural Liquidity Map")
