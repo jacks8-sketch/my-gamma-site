@@ -20,7 +20,7 @@ st.markdown("""
 
 def get_data():
     try:
-        ndx = yf.Ticker("^NDX")
+        ndx = yf.Ticker("^QQQ")
         hist_long = ndx.history(period="60d")
         if hist_long.empty:
             return None, None, None, None, None, None
