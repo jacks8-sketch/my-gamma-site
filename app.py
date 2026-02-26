@@ -65,7 +65,18 @@ if spot:
     all_gex['cum_gex'] = all_gex['GEX'].cumsum()
     
     # Find the zero cross
-    flip_idx = np.abs(all_gex['cum_gex']).argmin()
+    # --- FIX START ---
+if not all_gex.empty and 'cum_gex' in all_gex.columns:
+    # Check if there are actual values to calculate
+    if all_gex['cum_gex'].notna().any():
+        flip_idx = np.abs(all_gex['cum_gex']).argmin()
+    else:
+        st.warning("Cumulative Gamma data is empty. Try a different range.")
+        st.stop()
+else:
+    st.error("No data found for the current selection. Please check your data source or ticker.")
+    st.stop()
+# --- FIX END ---
     gamma_flip = all_gex.iloc[flip_idx]['strike']
 
     # Bias Logic
