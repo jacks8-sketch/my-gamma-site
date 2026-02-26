@@ -6,7 +6,7 @@ import numpy as np
 import requests
 from streamlit_autorefresh import st_autorefresh
 
-# 1. SETUP & THEME
+# 1. SETUP
 st_autorefresh(interval=60000, key="datarefresh")
 st.set_page_config(page_title="NDX Sniper Pro", layout="wide")
 
@@ -57,9 +57,15 @@ if spot is not None and not calls.empty:
     calls.columns = [c.lower() for c in calls.columns]
     puts.columns = [c.lower() for c in puts.columns]
     
-    # CALCULATE GEX WITH VISIBILITY SCALING
-    calls['gamma'] = pd.to_numeric(calls.get('gamma', 0.0001), errors='coerce').fillna(0.0001)
-    puts['gamma'] = pd.to_numeric(puts.get('gamma', 0.0001), errors='coerce').fillna(0.0001)
+    # FIX: Robust Gamma Handling (Prevents the Line 61 Crash)
+    def clean_gamma(df):
+        if 'gamma' not in df.columns:
+            df['gamma'] = 0.0001
+        df['gamma'] = pd.to_numeric(df['gamma'], errors='coerce').fillna(0.0001)
+        return df
+
+    calls = clean_gamma(calls)
+    puts = clean_gamma(puts)
     
     # Scale GEX (OI * Gamma * 1000) so bars are prominent
     calls['gex'] = (calls['openinterest'] * calls['gamma']) * 1000
@@ -98,6 +104,7 @@ if spot is not None and not calls.empty:
                 st.write("### 🟡 Metrics")
                 st.metric("Daily Bias", bias)
                 st.metric("Avg IV", f"{avg_iv:.1f}%")
+                st.metric("Gamma Flip", f"{gamma_flip:,.0f}")
             with c3:
                 st.write("### 🔴 Support")
                 for s in puts.nlargest(3, 'openinterest')['strike'].sort_values(ascending=False):
